@@ -344,8 +344,9 @@ your body signals the cost isn't worth it.
 energy cost. Like PoW for Bitcoin — the cost IS the mechanism that makes
 the system work honestly and efficiently.
 
-**Novelty claim:** No known agent architecture makes computational cost
-a first-class internal cognitive signal rather than an external constraint.
+**Believed novel:** We have not found an agent architecture that makes
+computational cost a first-class internal cognitive signal rather than
+an external constraint.
 
 ---
 
@@ -725,9 +726,9 @@ The PCA axes are the agent's LEARNED emotional vocabulary — a way to
 talk about and understand its own unconscious signals. This is a form
 of emotional intelligence emerging from data, not from programming.
 
-### Why this might be genuinely novel
+### Why we believe this may be novel
 
-No known agent architecture:
+We have not found an agent architecture that:
 1. Uses two centroids (self vs attention) with a delta vector as gut feeling
 2. Treats the experience compression layer as a functional unconscious mind
 3. Distinguishes between conscious recall (RAG) and unconscious signaling
@@ -742,7 +743,8 @@ different purposes, modeling the conscious/unconscious divide as geometry.
 **OPEN RESEARCH QUESTION: Can emotional self-awareness — learning to read
 your own unconscious signals — emerge from accumulated experience rather
 than being programmed? The two-centroid + delta + PCA pipeline is a
-testable hypothesis for this question. No known system attempts this.**
+testable hypothesis for this question. We have not found any system
+   that attempts this.**
 
 ### Practical note: embedding Layer 0 and Layer 1
 
@@ -2104,7 +2106,7 @@ deepen.
 
 ## Novelty Assessment (Literature Review, Feb 2026)
 
-### Genuinely novel (no meaningful prior art):
+### Believed novel — no prior implementation found in our review:
 1. **DMN idle loop** — heartbeat random retrieval filtered through
    goals/values for spontaneous self-prompting
 2. **Compulsion/addiction safety** — diminishing returns as internal
@@ -2126,12 +2128,12 @@ deepen.
    **OPEN RESEARCH QUESTION: Can emotional self-awareness — learning to
    read your own unconscious signals — emerge from accumulated experience
    rather than being programmed? The two-centroid + delta + PCA pipeline
-   is a testable hypothesis. No known system attempts this.**
+   is a testable hypothesis. We have not found any system that attempts this.**
 6. **Computational cost as internal cognitive signal** — agent FEELS cost
-   of computation, not external budget caps. PoW analogy. No prior agent
-   architecture makes cost a first-class internal signal.
+   of computation, not external budget caps. PoW analogy. We found no prior
+   agent architecture that makes cost a first-class internal signal.
 
-### Novel implementation of existing concepts:
+### Believed to be novel implementation of existing concepts:
 5. Identity as weighted floats in base layer (ACT-R has activations,
    Hindsight has dispositions, but not at identity level)
 6. Three-layer by cognitive function (identity/goals/data)
@@ -2144,9 +2146,10 @@ deepen.
 11. Dual memory gate (components exist separately)
 12. Containment model (components exist, mind/body metaphor is new)
 
-### Overall: combination is genuinely novel. No system integrates all 13
-features. Closest would be Generative Agents + SOFAI-LM + CMA + Hindsight
-mashed together, and that still misses features 1, 2, 3, 4, 8.
+### Overall: we believe the combination is novel. We found no system that
+integrates all 13 features. Closest would be Generative Agents + SOFAI-LM +
+CMA + Hindsight mashed together, and that still misses features 1, 2, 3, 4, 8.
+This assessment is based on our review and may be incomplete.
 
 ### WARNING: field is converging fast. Hindsight (Dec 2025), CMA (Jan 2026),
 ICLR 2026 MemAgents workshop — similar ideas approaching from different

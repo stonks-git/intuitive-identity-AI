@@ -751,7 +751,7 @@ Fix all 15 heredoc-mangled syntax errors plus structural issues.
 
 ### 4.7 DMN / Idle Loop (Full Implementation)
 **What:** Self-generated input feeding the main cognitive loop when attention is free.
-**Why:** Genuinely novel — no AI implementations in literature.
+**Why:** We believe this is novel — no AI implementations found in our literature review.
 **Where:** `idle.py` → generates inputs for `loop.py`
 **How:**
 - **NOT a separate processing pipeline.** The DMN generates inputs that queue for the main cognitive loop (3.4). Processing is identical to user messages. Attention allocation (3.10) determines whether DMN input wins attention.
@@ -774,7 +774,7 @@ Fix all 15 heredoc-mangled syntax errors plus structural issues.
 
 ### 4.8 Energy Cost Tracking (Phase 1: Passive)
 **What:** Log every API call with cost, expose via `/cost`, include in system prompt.
-**Why:** Novelty claim: cost as internal cognitive signal.
+**Why:** Believed novel: cost as internal cognitive signal — no prior implementation found.
 **Where:** `llm.py`, `loop.py`
 **How:**
 - Track per call: model, tokens_in, tokens_out, cost_usd, timestamp
@@ -866,7 +866,7 @@ Fix all 15 heredoc-mangled syntax errors plus structural issues.
 
 ### 5.3 Full Promotion Pathway with Outcome Tracking
 **What:** End-to-end experiences → goals → identity with forward-linkable outcome IDs.
-**Why:** No existing system does this. Core differentiator. Enables fear/hope axes in PCA.
+**Why:** We found no existing system that does this. Core differentiator. Enables fear/hope axes in PCA.
 **Where:** `consolidation.py`, `safety.py`
 **How:**
 - Full lifecycle tracking on every gate decision and gut delta

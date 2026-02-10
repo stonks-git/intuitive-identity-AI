@@ -479,7 +479,7 @@ These are blocking dependencies for everything else.
 
 ### 4.6 DMN / Idle Loop (Full Implementation)
 **What:** Fill in `idle.py:_heartbeat()` with stochastic memory surfacing from ALL layers.
-**Why:** Genuinely novel — no AI implementations found in literature.
+**Why:** We believe this is novel — no AI implementations found in our literature review.
 **Where:** `idle.py`
 **How:**
 - **Stochastic sampling pool includes ALL layers:**
@@ -503,7 +503,7 @@ These are blocking dependencies for everything else.
 
 ### 4.7 Energy Cost Tracking (Phase 1: Passive)
 **What:** Log every API call with cost, expose via `/cost` command, include in system prompt.
-**Why:** Design doc novelty claim: computational cost as internal cognitive signal, not external cap. Phase 1 is awareness only — no budget enforcement.
+**Why:** Believed novel: computational cost as internal cognitive signal, not external cap — no prior implementation found. Phase 1 is awareness only — no budget enforcement.
 **Where:** `llm.py` (logging), `loop.py` (display + prompt injection)
 **How:**
 - **Track per call:** model, tokens_in, tokens_out, cost_usd, timestamp
@@ -573,7 +573,7 @@ These are blocking dependencies for everything else.
 
 ### 5.3 Pattern-to-Goal-to-Identity Promotion
 **What:** Automated full pathway for experiences → goals → identity.
-**Why:** No existing system does this end-to-end. Core differentiator.
+**Why:** We found no existing system that does this end-to-end. Core differentiator.
 **Where:** `consolidation.py` (builds on 4.2), `layers.py`, `safety.py`
 **How:**
 - Uses promotion logic from 4.2 but adds full lifecycle tracking

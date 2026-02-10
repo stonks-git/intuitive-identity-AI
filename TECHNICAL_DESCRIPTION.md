@@ -377,16 +377,16 @@ The trajectory: from fixed layers to continuous spectrum, from deterministic to 
 
 ## VI. Novelty Claims
 
-**Genuinely novel (no meaningful prior art as of February 2026):**
+**Believed novel — no prior implementation found in our review of 100+ papers (2024-2026):**
 
-1. **DMN idle loop** — heartbeat random retrieval filtered through goals AND values for spontaneous self-prompting. No prior system combines random memory retrieval with dual goal/value filtering to produce autonomous action.
+1. **DMN idle loop** — heartbeat random retrieval filtered through goals AND values for spontaneous self-prompting. We found no prior system combining random memory retrieval with dual goal/value filtering to produce autonomous action.
 2. **Compulsion safety as internal architecture** — diminishing returns, dominance dampening, utility tracking as structural features, not external oversight.
 3. **Strange loop identity emergence** — the feedback loop between memory weight layers as the explicit runtime mechanism for "I."
 4. **Spawning with continuous identity weight inheritance + merge** — child agents inheriting weighted identity (not binary traits) with merge protocol.
 5. **Unconscious mind simulation + emergent emotional self-awareness** — two-centroid + delta model with PCA-learned gut axes developing from experience.
 6. **Computational cost as internal cognitive signal** — the agent feels computation cost, not bounded by external budget caps.
 
-**Novel implementation of existing concepts:**
+**Believed to be novel implementation of existing concepts:**
 
 7. Identity as weighted floats (Beta distributions) at the base layer
 8. Three-region architecture organized by cognitive function on a continuous spectrum
@@ -395,7 +395,7 @@ The trajectory: from fixed layers to continuous spectrum, from deterministic to 
 11. Self-tuning gate weights and Dirichlet relevance parameters via consolidation
 12. Attention allocation with cognitive state report bridging subconscious and conscious processing
 
-**The field is converging fast.** Hindsight (Dec 2025), CMA (Jan 2026), ICLR 2026 MemAgents workshop — similar ideas approaching from different angles. The window for establishing priority is open but narrowing.
+If prior work exists for any of these claims, we welcome the reference. **The field is converging fast.** Hindsight (Dec 2025), CMA (Jan 2026), ICLR 2026 MemAgents workshop — similar ideas approaching from different angles. The window for establishing priority is open but narrowing.
 
 ---
 

@@ -231,7 +231,7 @@ These are blocking dependencies for everything else.
 
 ### 4.2 DMN / Idle Loop (Full Implementation)
 **What:** Fill in `idle.py:_heartbeat()` with stochastic memory surfacing.
-**Why:** Genuinely novel — no AI implementations found in literature. Significant differentiator.
+**Why:** We believe this is novel — no AI implementations found in our literature review. Significant differentiator if assessment holds.
 **Where:** `idle.py`
 **How:**
 - **Stochastic sampling:** Bias toward:
@@ -291,7 +291,7 @@ These are blocking dependencies for everything else.
 
 ### 5.3 Pattern-to-Goal-to-Identity Promotion
 **What:** Automated pathway for experiences to become goals to become identity.
-**Why:** No existing system does this. Core differentiator.
+**Why:** We found no existing system that does this end-to-end. Core differentiator.
 **Where:** `consolidation.py` (promotion logic), `layers.py` (persistence), `safety.py` (guardrails)
 **How:**
 - **Layer 2 → Layer 1:** Pattern detected 5+ times over 14+ days, Q-value utility > threshold

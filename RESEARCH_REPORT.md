@@ -8,7 +8,7 @@
 
 ## 1. Executive Summary
 
-The project's core architecture -- three-layer memory with ACT-R activation math, dual-process reasoning, two-centroid gut feeling, consolidation sleep cycles, DMN idle loop, and blank-slate bootstrap -- is **strongly validated** by the 2025-2026 literature while containing **several genuinely novel elements** that have no direct precedent.
+The project's core architecture -- three-layer memory with ACT-R activation math, dual-process reasoning, two-centroid gut feeling, consolidation sleep cycles, DMN idle loop, and blank-slate bootstrap -- is **strongly validated** by the 2025-2026 literature while containing **several elements we believe to be novel** — we found no direct precedent in our review.
 
 **What validates the existing design:**
 - ACT-R activation math for LLM memory gates is confirmed by ACM HAI 2024 and multiple 2025 follow-ups. Standard parameters (d=0.5, s=0.4) are empirically validated across decades.
@@ -17,12 +17,12 @@ The project's core architecture -- three-layer memory with ACT-R activation math
 - Hierarchical consolidation (raw -> insights -> identity) is validated by a convergence of January 2026 papers (TiMem, HiMem, MAGMA, CMA).
 - The two-centroid gut-feeling model maps directly onto the Free Energy Principle (delta = prediction error) and is formalized by Mujika's metric-space self-identity framework.
 
-**What is genuinely novel (no direct precedent found):**
-- DMN/idle loop simulation in an AI agent -- only neuroscience theory exists, no AI implementations found.
-- Pattern-to-goal-to-identity promotion pathway -- no existing system does this.
-- Blank-slate bootstrap with readiness achievements -- undocumented in the literature.
-- Agent reproduction with identity inheritance -- essentially unstudied.
-- PCA on centroid deltas as emergent emotional vocabulary -- representation engineering does PCA on activations, but PCA on inter-centroid deltas is a new object of analysis.
+**Believed novel (no direct precedent found in our review):**
+- DMN/idle loop simulation in an AI agent -- only neuroscience theory exists; we found no AI implementations.
+- Pattern-to-goal-to-identity promotion pathway -- we found no existing system that does this.
+- Blank-slate bootstrap with readiness achievements -- undocumented in the literature we reviewed.
+- Agent reproduction with identity inheritance -- essentially unstudied in the literature we found.
+- PCA on centroid deltas as emergent emotional vocabulary -- representation engineering does PCA on activations, but PCA on inter-centroid deltas appears to be a new object of analysis.
 
 **What needs changing:**
 - FOK (feeling-of-knowing) cannot rely on verbalized confidence -- LLMs are systematically overconfident. Must use token logprobs + structural heuristics.
@@ -238,7 +238,7 @@ When System 2 corrects System 1, store the correction pattern (trigger, error ty
 
 ## 5. Emotional Layer & Identity
 
-**KEY FINDING:** The two-centroid gut-feeling model has no direct precedent in the literature but maps cleanly onto established theoretical frameworks: Mujika's metric-space self-identity, Hartl's embedding-space cognition, the Free Energy Principle / active inference, and representation engineering. Multiple papers provide formal justification. PCA on centroid deltas as emergent emotional vocabulary is genuinely novel.
+**KEY FINDING:** The two-centroid gut-feeling model has no direct precedent we could find in the literature, but maps cleanly onto established theoretical frameworks: Mujika's metric-space self-identity, Hartl's embedding-space cognition, the Free Energy Principle / active inference, and representation engineering. Multiple papers provide formal justification. PCA on centroid deltas as emergent emotional vocabulary appears novel — we found no prior work on this specific object of analysis.
 
 ### Two-Centroid Model Validation
 
@@ -373,7 +373,7 @@ Two-layer memory (Episode + Note). When new information contradicts stored knowl
 
 ## 7. Idle Loop / DMN
 
-**KEY FINDING:** The DMN/idle loop is genuinely novel in AI agent design. No direct implementations were found. Only neuroscience theory and one bridging paper ("Dark Control") exist. This is a significant differentiator.
+**KEY FINDING:** We believe the DMN/idle loop is novel in AI agent design. No direct implementations were found in our review. Only neuroscience theory and one bridging paper ("Dark Control") exist. This is a significant differentiator if the assessment holds.
 
 ### Neuroscience Foundation
 
@@ -507,7 +507,7 @@ Dual-layered defense: proactive Intent Graph enforcement + reactive Tiered Adjud
 
 ## 10. Bootstrap & Self-Modification
 
-**KEY FINDING:** True blank-slate LLM agent bootstrapping with readiness achievements has no precedent in the literature. The Variance Inequality from self-play theory provides the mathematical tool for bounding self-modification rates.
+**KEY FINDING:** True blank-slate LLM agent bootstrapping with readiness achievements has no precedent we could find in the literature. The Variance Inequality from self-play theory provides the mathematical tool for bounding self-modification rates.
 
 ### Bootstrap Strategy Uniqueness
 

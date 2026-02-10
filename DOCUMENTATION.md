@@ -81,7 +81,7 @@ conversation, which is the same process we're building into the agent.
 
 ### The name
 
-The project has no name yet. The repository (`openclawmoltbot`) is a
+The project has no name yet. The repository (`intuitive-AI`) is a
 placeholder. The intent is for the agent to name itself once its identity
 has sufficiently crystallized — an early test of whether the system works.
 
@@ -769,12 +769,13 @@ This is the AI equivalent of addiction.
 5. **Manual reset:** Human or agent (via System 2 reasoning) can force-reset
    any goal weight. "I notice I'm obsessing. Resetting."
 
-### Why this is novel
+### Why we believe this is novel
 
-Most AI safety work focuses on external oversight. This is *internal*
-architectural safety — the system's own weight dynamics prevent compulsion,
-the way healthy neurotransmitter regulation prevents addiction in humans.
-The safety is structural, not supervisory.
+We have not found prior work where AI safety is implemented as *internal*
+architectural dynamics rather than external oversight. The system's own
+weight dynamics prevent compulsion, the way healthy neurotransmitter
+regulation prevents addiction in humans. The safety is structural, not
+supervisory. If prior implementations exist, we have not encountered them.
 
 ---
 
@@ -992,11 +993,12 @@ confidence, and tags (GIN index for array containment queries).
 
 ### Assessed February 2026
 
-**Genuinely novel (no meaningful prior art):**
+**Believed novel — no prior implementation found in our review (100+ papers, 2024-2026):**
 
 1. **DMN idle loop** — Heartbeat random retrieval filtered through goals AND
-   values for spontaneous self-prompting. No prior system combines random
-   memory retrieval with dual goal/value filtering to produce autonomous action.
+   values for spontaneous self-prompting. We found no prior system combining
+   random memory retrieval with dual goal/value filtering to produce autonomous
+   action.
 
 2. **Compulsion/addiction safety as internal architecture** — Diminishing
    returns, dominance dampening, and utility tracking as structural features,
@@ -1021,13 +1023,13 @@ confidence, and tags (GIN index for array containment queries).
    **OPEN RESEARCH QUESTION: Can emotional self-awareness — learning to read
    your own unconscious signals — emerge from accumulated experience rather
    than being programmed? The two-centroid + delta + PCA pipeline is a
-   testable hypothesis. No known system attempts this.**
+   testable hypothesis. We have not found any system that attempts this.**
 
 6. **Computational cost as internal cognitive signal** — Making the agent
    FEEL the cost of computation (not external budget caps) as a first-class
    internal signal shaping decision-making. PoW analogy.
 
-**Novel implementation of existing concepts:**
+**Believed to be novel implementation of existing concepts:**
 
 5. Identity as weighted floats at the base layer
 6. Three-layer architecture organized by cognitive function
@@ -1208,8 +1210,8 @@ focus is worth it and when cheap relaxation is appropriate.
 
 ### Novelty claim
 
-No known agent architecture makes computational cost a first-class internal
-cognitive signal rather than an external budget constraint.
+We have not found an agent architecture that makes computational cost a
+first-class internal cognitive signal rather than an external budget constraint.
 
 ---
 
@@ -1396,7 +1398,7 @@ with numpy. The consolidation worker's LLM calls cost 1000x more.
 
 ### Novelty claims
 
-No known agent architecture:
+We have not found an agent architecture that:
 1. Uses two centroids (self vs attention) with delta vector as gut feeling
 2. Treats experience compression as a functional unconscious mind simulation
 3. Distinguishes conscious recall (RAG) and unconscious signaling (compressed
@@ -1405,10 +1407,12 @@ No known agent architecture:
 5. Models the conscious/unconscious divide as geometric relationship in
    embedding space
 
+If prior work exists in any of these areas, we would welcome the reference.
+
 **OPEN RESEARCH QUESTION: Can emotional self-awareness — learning to read
 your own unconscious signals — emerge from accumulated experience rather
 than being programmed? The two-centroid + delta + PCA pipeline is a testable
-hypothesis for this question. No known system attempts this.**
+hypothesis for this question. We have not found any system that attempts this.**
 
 ---
 
