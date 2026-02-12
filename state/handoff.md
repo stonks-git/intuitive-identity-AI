@@ -92,6 +92,11 @@
    - `check_all()` at session start + after each exit gate flush
    - Bootstrap prompt injected into system prompt when milestones incomplete
    - `/readiness` uses persistent instance
+10. WIRE-003 DONE — OutcomeTracker wired into safety + consolidation:
+   - `OutcomeTracker` instantiated in loop, attached to `memory.outcome_tracker`
+   - Gate persist/drop decisions recorded in `_flush_scratch_through_exit_gate`
+   - Consolidation promotions (goal + identity) recorded in `_promote_patterns`
+   - `gut.link_outcome()` called after each gate decision
 
 ---
 
@@ -108,7 +113,8 @@ Cognitive architecture for emergent AI identity. Three-layer memory unified into
 | FW-001 | done |
 | WIRE-001 | done |
 | WIRE-002 | done |
-| WIRE-003 | next - Wire OutcomeTracker into safety + consolidation |
+| WIRE-003 | done |
+| TEST-001 | next - End-to-end runtime test on norisor |
 
 ## What exists
 
@@ -220,8 +226,8 @@ python3 -m src.main
 ## Git Status
 
 - **Branch:** main
-- **Last commit:** b95f5da Adopt AI-DEV framework + add unattended execution directive
-- **Modified:** KB/KB_03_cognitive_loop.md, src/loop.py, src/relevance.py, state files
+- **Last commit:** d7c3b72 Wire BootstrapReadiness into cognitive loop (WIRE-002)
+- **Modified:** src/loop.py, src/consolidation.py, KB/KB_03_cognitive_loop.md, state files
 
 ---
 

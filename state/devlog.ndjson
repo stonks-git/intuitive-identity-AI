@@ -4,3 +4,5 @@
 {"ts":"2026-02-12T10:30:00Z","type":"kb_update","msg":"KB_03_cognitive_loop.md updated with gut feeling integration section."}
 {"ts":"2026-02-12T11:00:00Z","type":"milestone","msg":"WIRE-002 done. BootstrapReadiness wired into loop: persistent instance, check_all at startup + after flush, bootstrap prompt injected into system prompt, /readiness uses persistent instance."}
 {"ts":"2026-02-12T11:00:00Z","type":"kb_update","msg":"KB_03_cognitive_loop.md updated with bootstrap readiness integration section."}
+{"ts":"2026-02-12T11:30:00Z","type":"milestone","msg":"WIRE-003 done. OutcomeTracker wired: gate decisions recorded in exit flush, promotions recorded in consolidation, gut deltas forward-linked to outcomes."}
+{"ts":"2026-02-12T11:30:00Z","type":"kb_update","msg":"KB_03_cognitive_loop.md updated with OutcomeTracker integration section."}

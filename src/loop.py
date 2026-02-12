@@ -32,7 +32,7 @@ from .gut import GutFeeling
 from .bootstrap import BootstrapReadiness
 from .context_assembly import assemble_context, render_system_prompt, adaptive_fifo_prune
 from .metacognition import composite_confidence
-from .safety import SafetyMonitor
+from .safety import SafetyMonitor, OutcomeTracker
 from .tokens import count_tokens, count_messages_tokens
 
 logger = logging.getLogger("agent.loop")
@@ -161,7 +161,10 @@ async def _run_entry_gate(gate, content, source, memory, source_tag="external_us
     return should_buffer, meta
 
 
-async def _flush_scratch_through_exit_gate(exit_gate, memory, layers, conversation):
+async def _flush_scratch_through_exit_gate(
+    exit_gate, memory, layers, conversation,
+    outcome_tracker=None, gut=None,
+):
     """Periodic flush: pull scratch buffer, score each with exit gate."""
     entries = await memory.flush_scratch(older_than_minutes=0)
     if not entries:
@@ -181,6 +184,20 @@ async def _flush_scratch_through_exit_gate(exit_gate, memory, layers, conversati
             layers=layers,
             conversation_context=conversation,
         )
+
+        action = "persist" if should_persist else "drop"
+        memory_id = entry.get("id", "scratch")
+
+        # Record gate decision in outcome tracker
+        if outcome_tracker is not None:
+            outcome_id = outcome_tracker.record_gate_decision(
+                memory_id=str(memory_id),
+                action=action,
+                details={"gate_score": score},
+            )
+            # Link gut delta to this outcome
+            if gut is not None:
+                gut.link_outcome(outcome_id)
 
         if should_persist:
             source_info = entry.get("source", "conversation")
@@ -256,6 +273,11 @@ async def cognitive_loop(config, layers, memory, shutdown_event, dmn_queue=None)
     memory.safety = safety
     logger.info("Safety monitor initialized (Phase A active, B/C shadow)")
 
+    # Init outcome tracker (§5.3) — forward-linkable lifecycle events
+    outcome_tracker = OutcomeTracker()
+    memory.outcome_tracker = outcome_tracker
+    logger.info("Outcome tracker initialized")
+
     # Init gut feeling (§5.1) — two-centroid delta model
     gut = GutFeeling()
     # Seed subconscious centroid from L0/L1 layer embeddings
@@ -327,7 +349,8 @@ async def cognitive_loop(config, layers, memory, shutdown_event, dmn_queue=None)
                 if user_input.lower() in ("exit", "quit", "/quit"):
                     logger.info("Final scratch flush before shutdown...")
                     await _flush_scratch_through_exit_gate(
-                        exit_gate, memory, layers, conversation
+                        exit_gate, memory, layers, conversation,
+                        outcome_tracker=outcome_tracker, gut=gut,
                     )
                     logger.info("User requested shutdown.")
                     shutdown_event.set()
@@ -614,7 +637,8 @@ async def cognitive_loop(config, layers, memory, shutdown_event, dmn_queue=None)
             if exchange_count >= EXIT_GATE_FLUSH_INTERVAL:
                 logger.info("Periodic exit gate flush triggered...")
                 await _flush_scratch_through_exit_gate(
-                    exit_gate, memory, layers, conversation
+                    exit_gate, memory, layers, conversation,
+                    outcome_tracker=outcome_tracker, gut=gut,
                 )
                 exchange_count = 0
 
@@ -799,7 +823,9 @@ async def _handle_command(
     if command == "/flush":
         print("Forcing scratch flush through exit gate...")
         await _flush_scratch_through_exit_gate(
-            exit_gate, memory, layers, conversation
+            exit_gate, memory, layers, conversation,
+            outcome_tracker=getattr(memory, 'outcome_tracker', None),
+            gut=gut,
         )
         print(f"Done. Exit gate stats: {exit_gate.stats}\n")
         return True

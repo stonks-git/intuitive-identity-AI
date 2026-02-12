@@ -42,6 +42,14 @@ Losers decay 0.9x per cycle. User messages naturally suppress DMN.
 - **Command:** `/readiness` uses persistent instance (no re-creation)
 - When all 10 milestones achieved, bootstrap prompt stops being injected
 
+## OutcomeTracker Integration (§5.3)
+
+- **Lifecycle:** `OutcomeTracker` instantiated in loop, attached to `memory.outcome_tracker`
+- **Gate decisions:** Every persist/drop in exit gate flush records `record_gate_decision()`
+- **Promotions:** Consolidation `_promote_patterns` records `record_promotion()` for both goal and identity targets
+- **Gut linking:** `gut.link_outcome(outcome_id)` called after each gate decision, forward-linking gut deltas to outcomes
+- Linked outcomes available via `get_linked_outcomes()` for PCA analysis in deep consolidation
+
 ## Escalation Threshold
 
 Adaptive: 0.3 (bootstrap) -> 0.8 (mature).

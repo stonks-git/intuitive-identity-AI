@@ -863,6 +863,9 @@ class DeepConsolidation:
                 gain = adj_gain
 
             if gain > 0:
+                old_center = float(mem["depth_weight_alpha"]) / (
+                    float(mem["depth_weight_alpha"]) + float(mem["depth_weight_beta"])
+                )
                 await self.memory.pool.execute(
                     """
                     UPDATE memories
@@ -871,6 +874,19 @@ class DeepConsolidation:
                     """,
                     gain, mem["id"],
                 )
+                new_center = (float(mem["depth_weight_alpha"]) + gain) / (
+                    float(mem["depth_weight_alpha"]) + gain + float(mem["depth_weight_beta"])
+                )
+                # Record promotion outcome
+                tracker = getattr(self.memory, 'outcome_tracker', None)
+                if tracker:
+                    tracker.record_promotion(
+                        memory_id=mem["id"],
+                        from_center=old_center,
+                        to_center=new_center,
+                        gain=gain,
+                        details={"target": "goal", "cycle_id": cycle_id},
+                    )
                 promoted_goal += 1
 
         # Find memories eligible for identity-range promotion
@@ -911,6 +927,9 @@ class DeepConsolidation:
                 gain = adj_gain
 
             if gain > 0:
+                old_center = float(mem["depth_weight_alpha"]) / (
+                    float(mem["depth_weight_alpha"]) + float(mem["depth_weight_beta"])
+                )
                 await self.memory.pool.execute(
                     """
                     UPDATE memories
@@ -919,6 +938,19 @@ class DeepConsolidation:
                     """,
                     gain, mem["id"],
                 )
+                new_center = (float(mem["depth_weight_alpha"]) + gain) / (
+                    float(mem["depth_weight_alpha"]) + gain + float(mem["depth_weight_beta"])
+                )
+                # Record promotion outcome
+                tracker = getattr(self.memory, 'outcome_tracker', None)
+                if tracker:
+                    tracker.record_promotion(
+                        memory_id=mem["id"],
+                        from_center=old_center,
+                        to_center=new_center,
+                        gain=gain,
+                        details={"target": "identity", "cycle_id": cycle_id},
+                    )
                 promoted_identity += 1
 
         if promoted_goal or promoted_identity:

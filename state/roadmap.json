@@ -133,7 +133,7 @@
       "intent": "Connect forward-linkable outcome tracking to gate decisions and consolidation",
       "depends_on": ["PLAN-004"],
       "priority": "P1",
-      "status": "todo",
+      "status": "done",
       "owner": "ai",
       "deliverable": "OutcomeTracker instantiated in loop, gate decisions recorded, promotions/demotions recorded, linked outcomes available for consolidation PCA",
       "acceptance_criteria": [
