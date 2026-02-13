@@ -48,11 +48,11 @@ class IdleLoop:
     Heartbeat interval adapts to activity level (biological anticorrelation).
     """
 
-    def __init__(self, config, layers, memory, dmn_queue: asyncio.Queue):
+    def __init__(self, config, layers, memory, input_queue: asyncio.Queue):
         self.config = config
         self.layers = layers
         self.memory = memory
-        self.dmn_queue = dmn_queue
+        self.input_queue = input_queue
         self.last_activity = datetime.now(timezone.utc)
         self.heartbeat_count = 0
         self._recent_topics: list[str] = []  # Track for entropy guard
@@ -154,10 +154,10 @@ class IdleLoop:
 
         # Queue for cognitive loop (non-blocking)
         try:
-            self.dmn_queue.put_nowait(candidate)
+            self.input_queue.put_nowait(candidate)
             logger.debug(f"DMN queued [{channel}]: {thought[:60]}")
         except asyncio.QueueFull:
-            logger.debug("DMN queue full — dropping candidate")
+            logger.debug("Input queue full — dropping DMN candidate")
 
     async def _sample_memory(self) -> dict | None:
         """Stochastic memory sampling with biases toward interesting content."""

@@ -19,7 +19,6 @@ Pipeline per cycle:
 import asyncio
 import logging
 import os
-import sys
 from datetime import datetime, timezone
 
 import numpy as np
@@ -234,7 +233,7 @@ async def _embed_text(memory, text: str) -> np.ndarray:
     return np.array(vec, dtype=np.float32)
 
 
-async def cognitive_loop(config, layers, memory, shutdown_event, dmn_queue=None):
+async def cognitive_loop(config, layers, memory, shutdown_event, input_queue: asyncio.Queue):
     """The main attention-agnostic cognitive loop.
 
     All input sources feed the same pipeline via AttentionAllocator.
@@ -242,8 +241,11 @@ async def cognitive_loop(config, layers, memory, shutdown_event, dmn_queue=None)
     context window — Python pre-processing is subconscious, the LLM
     call is conscious, injection is the bridge.
 
+    Peripherals (stdin, Telegram, DMN, etc.) push AttentionCandidate
+    objects into the shared input_queue. The loop drains it each cycle.
+
     Args:
-        dmn_queue: Optional asyncio.Queue of DMN AttentionCandidate objects
+        input_queue: Unified asyncio.Queue — all peripherals push here
                    produced by the idle loop. Consumed when no user input.
     """
     logger.info("Cognitive loop started. Awaiting input...")
@@ -317,71 +319,77 @@ async def cognitive_loop(config, layers, memory, shutdown_event, dmn_queue=None)
     while not shutdown_event.is_set():
         try:
             # ── Collect input candidates ──────────────────────────────
+            # Drain unified input queue — all peripherals push here.
 
-            # Read user input (non-blocking to allow shutdown)
-            print("you> ", end="", flush=True)
-            loop = asyncio.get_event_loop()
             try:
-                user_input = await asyncio.wait_for(
-                    loop.run_in_executor(None, sys.stdin.readline),
-                    timeout=1.0,
+                candidate = await asyncio.wait_for(
+                    input_queue.get(), timeout=1.0,
                 )
             except asyncio.TimeoutError:
-                # No user input — check DMN queue for internal candidates
-                has_dmn = False
-                if dmn_queue:
-                    while not dmn_queue.empty():
-                        try:
-                            dmn_candidate = dmn_queue.get_nowait()
-                            attention.add_candidate(dmn_candidate)
-                            has_dmn = True
-                        except asyncio.QueueEmpty:
-                            break
-                if not has_dmn:
+                # Nothing arrived — check if there are leftover losers
+                if attention.queue_size == 0:
                     continue
-                # DMN candidates available — fall through to attention allocation
-                user_input = None
-            else:
-                user_input = user_input.strip() if user_input else None
+                # Losers from previous cycle still in queue — process them
+                candidate = None
 
-            # ── Handle user input (if present) ─────────────────────────
-            if user_input:
-                if user_input.lower() in ("exit", "quit", "/quit"):
-                    logger.info("Final scratch flush before shutdown...")
-                    await _flush_scratch_through_exit_gate(
-                        exit_gate, memory, layers, conversation,
-                        outcome_tracker=outcome_tracker, gut=gut,
-                    )
-                    logger.info("User requested shutdown.")
-                    shutdown_event.set()
+            # Process first candidate + drain remaining
+            got_input = False
+            candidates_this_cycle = []
+            if candidate is not None:
+                candidates_this_cycle.append(candidate)
+            while not input_queue.empty():
+                try:
+                    extra = input_queue.get_nowait()
+                    candidates_this_cycle.append(extra)
+                except asyncio.QueueEmpty:
                     break
 
-                # ── Introspection commands ────────────────────────────
-                if user_input.startswith("/"):
-                    handled = await _handle_command(
-                        user_input, config, layers, memory, model_name,
-                        conversation, exchange_count, entry_gate, exit_gate,
-                        attention, gut=gut, bootstrap=bootstrap,
-                    )
-                    if handled:
-                        continue
+            # Handle each candidate
+            should_break = False
+            for cand in candidates_this_cycle:
+                if "external" in cand.source_tag:
+                    text = cand.content.strip()
+                    reply_fn = cand.metadata.get("reply_fn")
 
-                # ── Add user message as attention candidate ───────────
-                try:
-                    user_embedding = await _embed_text(memory, user_input)
-                except Exception as e:
-                    logger.warning(f"Failed to embed user input: {e}")
-                    user_embedding = None
+                    # ── Quit command ──────────────────────────────
+                    if text.lower() in ("exit", "quit", "/quit"):
+                        logger.info("Final scratch flush before shutdown...")
+                        await _flush_scratch_through_exit_gate(
+                            exit_gate, memory, layers, conversation,
+                            outcome_tracker=outcome_tracker, gut=gut,
+                        )
+                        logger.info("User requested shutdown.")
+                        shutdown_event.set()
+                        should_break = True
+                        break
 
-                user_candidate = AttentionCandidate(
-                    content=user_input,
-                    source_tag="external_user",
-                    embedding=user_embedding,
-                )
-                attention.add_candidate(user_candidate)
+                    # ── Introspection commands ────────────────────
+                    if text.startswith("/"):
+                        handled = await _handle_command(
+                            text, config, layers, memory, model_name,
+                            conversation, exchange_count, entry_gate, exit_gate,
+                            attention, gut=gut, bootstrap=bootstrap,
+                            reply_fn=reply_fn,
+                        )
+                        if handled:
+                            continue
 
-            elif not user_input and attention.queue_size == 0:
-                # No user input and no DMN candidates — nothing to process
+                    # ── Embed if needed (stdin peripheral skips embedding) ──
+                    if cand.embedding is None:
+                        try:
+                            cand.embedding = await _embed_text(memory, text)
+                        except Exception as e:
+                            logger.warning(f"Failed to embed input: {e}")
+
+                # Add to attention allocator (external or internal)
+                attention.add_candidate(cand)
+                got_input = True
+
+            if should_break:
+                break
+
+            if not got_input and attention.queue_size == 0:
+                # No input and no pending candidates — nothing to process
                 continue
 
             # ── Attention allocation ──────────────────────────────────
@@ -623,10 +631,14 @@ async def cognitive_loop(config, layers, memory, shutdown_event, dmn_queue=None)
 
             # ── Output ────────────────────────────────────────────────
 
-            # For external_user sources, print the reply
+            # Route reply to the peripheral that sent the input
             if "external" in winner.source_tag:
                 prefix = "agent" if not escalated else "agent[S2]"
-                print(f"\n{prefix}> {reply}\n")
+                reply_fn = winner.metadata.get("reply_fn")
+                if reply_fn is not None:
+                    await reply_fn(f"{prefix}> {reply}")
+                else:
+                    print(f"\n{prefix}> {reply}\n")
             else:
                 # Internal thoughts — log only, don't print
                 logger.info(f"Internal thought response: {reply[:200]}")
@@ -766,97 +778,119 @@ async def _handle_command(
     config, layers, memory, model_name,
     conversation, exchange_count, entry_gate, exit_gate,
     attention, gut=None, bootstrap=None,
+    reply_fn=None,
 ) -> bool:
     """Handle introspection commands. Returns True if handled."""
 
+    async def _send(text: str):
+        """Route output to the peripheral that sent the command."""
+        if reply_fn is not None:
+            await reply_fn(text)
+        else:
+            print(text)
+
     if command == "/identity":
-        print("\n" + layers.render_identity_full() + "\n")
+        await _send("\n" + layers.render_identity_full() + "\n")
         return True
 
     if command == "/identity-hash":
-        print("\n" + layers.render_identity_hash() + "\n")
+        await _send("\n" + layers.render_identity_hash() + "\n")
         return True
 
     if command == "/containment":
-        print(f"\nTrust level: {config.containment.trust_level}")
-        print(f"Self-spawn: {config.containment.self_spawn}")
-        print(f"Self-migration: {config.containment.self_migration}")
-        print(f"Network: {config.containment.network_mode}")
-        print(f"Allowed endpoints: {config.containment.allowed_endpoints}")
-        print(f"Can modify containment: {config.containment.can_modify_containment}\n")
+        lines = [
+            f"\nTrust level: {config.containment.trust_level}",
+            f"Self-spawn: {config.containment.self_spawn}",
+            f"Self-migration: {config.containment.self_migration}",
+            f"Network: {config.containment.network_mode}",
+            f"Allowed endpoints: {config.containment.allowed_endpoints}",
+            f"Can modify containment: {config.containment.can_modify_containment}\n",
+        ]
+        await _send("\n".join(lines))
         return True
 
     if command == "/status":
-        print(f"\nAgent: {layers.manifest.get('agent_id')}")
-        print(f"Phase: {layers.manifest.get('phase')}")
-        print(f"System 1: {model_name}")
-        print(f"Layer 0: v{layers.layer0.get('version')}, {len(layers.layer0.get('values', []))} values")
-        print(f"Layer 1: v{layers.layer1.get('version')}, {len(layers.layer1.get('active_goals', []))} goals")
         mc = await memory.memory_count()
-        print(f"Memories: {mc}")
-        print(f"Conversation: {len(conversation)} messages")
-        print(f"Exchanges since flush: {exchange_count}/{EXIT_GATE_FLUSH_INTERVAL}")
-        print(f"Attention queue: {attention.queue_size} pending")
-        print(f"Gut: {gut.gut_summary()}\n")
+        lines = [
+            f"\nAgent: {layers.manifest.get('agent_id')}",
+            f"Phase: {layers.manifest.get('phase')}",
+            f"System 1: {model_name}",
+            f"Layer 0: v{layers.layer0.get('version')}, {len(layers.layer0.get('values', []))} values",
+            f"Layer 1: v{layers.layer1.get('version')}, {len(layers.layer1.get('active_goals', []))} goals",
+            f"Memories: {mc}",
+            f"Conversation: {len(conversation)} messages",
+            f"Exchanges since flush: {exchange_count}/{EXIT_GATE_FLUSH_INTERVAL}",
+            f"Attention queue: {attention.queue_size} pending",
+            f"Gut: {gut.gut_summary()}\n",
+        ]
+        await _send("\n".join(lines))
         return True
 
     if command == "/gate":
-        print(f"\nEntry gate stats: {entry_gate.stats}")
-        print(f"Exit gate stats: {exit_gate.stats}")
-        print(f"Exchanges since flush: {exchange_count}/{EXIT_GATE_FLUSH_INTERVAL}\n")
+        lines = [
+            f"\nEntry gate stats: {entry_gate.stats}",
+            f"Exit gate stats: {exit_gate.stats}",
+            f"Exchanges since flush: {exchange_count}/{EXIT_GATE_FLUSH_INTERVAL}\n",
+        ]
+        await _send("\n".join(lines))
         return True
 
     if command == "/memories":
         mc = await memory.memory_count()
-        print(f"\nTotal memories: {mc}")
+        lines = [f"\nTotal memories: {mc}"]
         if mc > 0:
             rows = await memory.pool.fetch(
                 "SELECT id, content, importance, confidence, created_at "
                 "FROM memories ORDER BY created_at DESC LIMIT 5"
             )
             for r in rows:
-                print(f"  [{r['id']}] imp={r['importance']:.2f} "
-                      f"conf={r['confidence']:.2f} | {r['content'][:70]}")
-        print()
+                lines.append(
+                    f"  [{r['id']}] imp={r['importance']:.2f} "
+                    f"conf={r['confidence']:.2f} | {r['content'][:70]}"
+                )
+        lines.append("")
+        await _send("\n".join(lines))
         return True
 
     if command == "/flush":
-        print("Forcing scratch flush through exit gate...")
+        await _send("Forcing scratch flush through exit gate...")
         await _flush_scratch_through_exit_gate(
             exit_gate, memory, layers, conversation,
             outcome_tracker=getattr(memory, 'outcome_tracker', None),
             gut=gut,
         )
-        print(f"Done. Exit gate stats: {exit_gate.stats}\n")
+        await _send(f"Done. Exit gate stats: {exit_gate.stats}\n")
         return True
 
     if command == "/attention":
-        print(f"\nAttention queue: {attention.queue_size} pending candidates")
         centroid = attention.attention_centroid
-        print(f"Attention centroid: {'computed' if centroid is not None else 'none (no history)'}")
         prev = attention.previous_attention_embedding
-        print(f"Previous embedding: {'set' if prev is not None else 'none'}\n")
+        lines = [
+            f"\nAttention queue: {attention.queue_size} pending candidates",
+            f"Attention centroid: {'computed' if centroid is not None else 'none (no history)'}",
+            f"Previous embedding: {'set' if prev is not None else 'none'}\n",
+        ]
+        await _send("\n".join(lines))
         return True
 
     if command == "/cost":
         from .llm import energy_tracker
-        print(f"\n{energy_tracker.detailed_report()}\n")
+        await _send(f"\n{energy_tracker.detailed_report()}\n")
         return True
 
     if command == "/readiness":
         if bootstrap is not None:
             await bootstrap.check_all(memory, layers)
-            print(f"\n{bootstrap.render_status()}\n")
+            await _send(f"\n{bootstrap.render_status()}\n")
         else:
-            print("\n[Bootstrap not initialized]\n")
+            await _send("\n[Bootstrap not initialized]\n")
         return True
 
     if command.startswith("/docs"):
         # §4.10: Agent reads own docs (read-only access to repo)
         parts = command.split(maxsplit=1)
         if len(parts) < 2:
-            print("\nAvailable docs: notes.md, DOCUMENTATION.md, src/*.py")
-            print("Usage: /docs <filename>\n")
+            await _send("\nAvailable docs: notes.md, DOCUMENTATION.md, src/*.py\nUsage: /docs <filename>\n")
         else:
             import pathlib
             repo_root = pathlib.Path(__file__).resolve().parent.parent
@@ -865,17 +899,17 @@ async def _handle_command(
             try:
                 target_path = (repo_root / target).resolve()
                 if not str(target_path).startswith(str(repo_root)):
-                    print("\n[Access denied: path outside repo]\n")
+                    await _send("\n[Access denied: path outside repo]\n")
                 elif not target_path.exists():
-                    print(f"\n[File not found: {target}]\n")
+                    await _send(f"\n[File not found: {target}]\n")
                 elif target_path.is_dir():
                     files = sorted(p.name for p in target_path.iterdir() if p.is_file())
-                    print(f"\nFiles in {target}/: {', '.join(files[:20])}\n")
+                    await _send(f"\nFiles in {target}/: {', '.join(files[:20])}\n")
                 else:
                     content = target_path.read_text()[:4000]
-                    print(f"\n--- {target} ---\n{content}\n--- end ---\n")
+                    await _send(f"\n--- {target} ---\n{content}\n--- end ---\n")
             except Exception as e:
-                print(f"\n[Error reading {target}: {e}]\n")
+                await _send(f"\n[Error reading {target}: {e}]\n")
         return True
 
     return False

@@ -28,6 +28,8 @@ from .memory import MemoryStore
 from .loop import cognitive_loop
 from .consolidation import ConsolidationEngine
 from .idle import IdleLoop
+from .stdin_peripheral import StdinPeripheral
+from .telegram_peripheral import TelegramPeripheral
 
 # Load .env before anything that needs API keys
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
@@ -104,11 +106,13 @@ async def main():
     # Start consolidation engine (two-tier: constant + deep)
     consolidation = ConsolidationEngine(config, layers, memory, retry_config=config.retry)
 
-    # DMN queue: idle loop produces, cognitive loop consumes
-    dmn_queue = asyncio.Queue(maxsize=10)
+    # Unified input queue — all peripherals push here, cognitive loop reads
+    input_queue = asyncio.Queue(maxsize=50)
 
-    # Start idle loop (default mode network)
-    idle = IdleLoop(config, layers, memory, dmn_queue)
+    # Peripherals
+    idle = IdleLoop(config, layers, memory, input_queue)
+    stdin_periph = StdinPeripheral(input_queue)
+    telegram_periph = TelegramPeripheral(input_queue, memory)
 
     # Shutdown handler
     shutdown_event = asyncio.Event()
@@ -120,13 +124,22 @@ async def main():
     signal.signal(signal.SIGINT, handle_shutdown)
     signal.signal(signal.SIGTERM, handle_shutdown)
 
-    # Run the cognitive loop
+    # Build task list — cognitive loop + consolidation + peripherals
+    tasks = [
+        cognitive_loop(config, layers, memory, shutdown_event, input_queue),
+        consolidation.run(shutdown_event),
+        idle.run(shutdown_event),
+        stdin_periph.run(shutdown_event),
+    ]
+    if telegram_periph.is_configured:
+        tasks.append(telegram_periph.run(shutdown_event))
+        logger.info("Telegram peripheral enabled")
+    else:
+        logger.info("Telegram peripheral disabled (no TELEGRAM_BOT_TOKEN)")
+
+    # Run all tasks concurrently
     try:
-        await asyncio.gather(
-            cognitive_loop(config, layers, memory, shutdown_event, dmn_queue=dmn_queue),
-            consolidation.run(shutdown_event),
-            idle.run(shutdown_event),
-        )
+        await asyncio.gather(*tasks)
     except Exception as e:
         logger.error(f"Fatal error: {e}", exc_info=True)
     finally:
