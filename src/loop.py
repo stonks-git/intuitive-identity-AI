@@ -17,9 +17,11 @@ Pipeline per cycle:
 """
 
 import asyncio
+import json
 import logging
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 
 import numpy as np
 from google import genai
@@ -41,6 +43,18 @@ EXIT_GATE_FLUSH_INTERVAL = 5
 
 # Escalation tracking (module-level, shared with dashboard via agent_state)
 _escalation_stats = {"retries": 0, "retry_successes": 0, "escalations": 0}
+
+# Consciousness log — persistent NDJSON record of every cycle
+_consciousness_log_path = Path.home() / ".agent" / "logs" / "consciousness.ndjson"
+
+
+def _log_consciousness(entry: dict):
+    """Append a cycle record to the consciousness log (fire-and-forget)."""
+    try:
+        with open(_consciousness_log_path, "a") as f:
+            f.write(json.dumps(entry, default=str) + "\n")
+    except Exception:
+        pass  # never block the loop for logging
 
 
 async def escalation_threshold(memory_store) -> float:
@@ -419,14 +433,21 @@ async def cognitive_loop(config, layers, memory, shutdown_event, input_queue: as
             if winner is None:
                 continue
 
-            # Publish cycle_start event for dashboard
+            # Publish cycle_start event for dashboard (full content, all candidates)
+            cycle_ts = datetime.now(timezone.utc).isoformat()
             if agent_state:
                 agent_state.publish_event({
                     "type": "cycle_start",
-                    "ts": datetime.now(timezone.utc).isoformat(),
-                    "source": winner.source_tag,
-                    "content": winner.content[:120],
-                    "salience": round(winner.salience, 3),
+                    "ts": cycle_ts,
+                    "winner": {
+                        "source": winner.source_tag,
+                        "content": winner.content,
+                        "salience": round(winner.salience, 3),
+                    },
+                    "losers": [
+                        {"source": l.source_tag, "content": l.content, "salience": round(l.salience, 3)}
+                        for l in losers[:5]
+                    ],
                     "queue_size": attention.queue_size,
                 })
 
@@ -537,6 +558,20 @@ async def cognitive_loop(config, layers, memory, shutdown_event, input_queue: as
             if correction_context:
                 active_system_prompt += "\n\n" + correction_context
 
+            # Publish context_assembled event for dashboard (full system prompt)
+            if agent_state:
+                agent_state.publish_event({
+                    "type": "context_assembled",
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "system_prompt": active_system_prompt,
+                    "conversation": [
+                        {"role": m.get("role"), "content": m.get("content"), "source_tag": m.get("source_tag")}
+                        for m in conversation
+                    ],
+                    "identity_tokens": context.get("identity_token_count", 0),
+                    "context_shift": round(context.get("context_shift", 0), 3),
+                })
+
             # ── System 1 LLM call ─────────────────────────────────────
 
             try:
@@ -565,13 +600,14 @@ async def cognitive_loop(config, layers, memory, shutdown_event, input_queue: as
 
             # ── Confidence check + retry/escalate ──────────────────────
 
-            # Publish llm_response event for dashboard (before escalation)
+            # Publish llm_response event for dashboard (full reply, before escalation)
             if agent_state and not reply.startswith("[System 1 error"):
                 agent_state.publish_event({
                     "type": "llm_response",
                     "ts": datetime.now(timezone.utc).isoformat(),
-                    "reply": reply[:200],
+                    "reply": reply,
                     "escalated": False,
+                    "model": model_name,
                     "confidence": round(composite_confidence(reply), 3),
                 })
 
@@ -659,13 +695,15 @@ async def cognitive_loop(config, layers, memory, shutdown_event, input_queue: as
                         memory=memory,
                     )
 
-                    # Publish escalated response for dashboard
+                    # Publish escalated response for dashboard (full reply)
                     if agent_state and escalated:
+                        s2_model = config.models.system2.model if config.models.system2 else "unknown"
                         agent_state.publish_event({
                             "type": "llm_response",
                             "ts": datetime.now(timezone.utc).isoformat(),
-                            "reply": reply[:200],
+                            "reply": reply,
                             "escalated": True,
+                            "model": s2_model,
                             "confidence": round(composite_confidence(reply), 3),
                         })
 
@@ -699,6 +737,22 @@ async def cognitive_loop(config, layers, memory, shutdown_event, input_queue: as
             else:
                 # Internal thoughts — log only, don't print
                 logger.info(f"Internal thought response: {reply[:200]}")
+
+            # ── Consciousness log (persistent) ─────────────────────────
+
+            _log_consciousness({
+                "ts": cycle_ts,
+                "source": winner.source_tag,
+                "salience": round(winner.salience, 3),
+                "input": winner.content,
+                "system_prompt_len": len(active_system_prompt),
+                "conversation_len": len(conversation),
+                "reply": reply,
+                "escalated": escalated,
+                "confidence": round(composite_confidence(reply), 3) if not reply.startswith("[") else None,
+                "context_shift": round(context.get("context_shift", 0), 3),
+                "queue_size_after": attention.queue_size,
+            })
 
             # ── Periodic exit gate flush ──────────────────────────────
 

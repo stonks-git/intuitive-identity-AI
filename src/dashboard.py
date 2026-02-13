@@ -3,18 +3,23 @@
 Real-time view of the agent's cognitive state via SSE + REST API.
 Serves a single-page dark-themed dashboard at http://0.0.0.0:8080.
 
+v2: Terminal-style consciousness monitor. Two-column layout:
+  - Left (65%): Conscious Mind — full LLM context in + response out, streaming
+  - Right top (35%): Attention Queue — full text of competing candidates
+  - Right bottom (35%): Memory Search — semantic search over memory DB
+
 Uses aiohttp — runs as another coroutine in asyncio.gather alongside
 the cognitive loop, consolidation, peripherals. Dashboard crash does
 not kill the agent.
 
 Memory browser uses direct asyncpg pool.fetch() for read-only access —
 no side effects on the cognitive system (no access counts, no mutation).
+Memory search uses search_hybrid(mutate=False) for the same reason.
 """
 
 import asyncio
 import json
 import logging
-import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -120,13 +125,14 @@ async def sse_handler(request):
 
 
 async def api_status(request):
-    """JSON snapshot of current agent state."""
+    """JSON snapshot of current agent state (header bar data)."""
     state: AgentState = request.app["agent_state"]
 
     data = {
         "agent_id": None,
         "phase": None,
-        "model": None,
+        "model_s1": None,
+        "model_s2": None,
         "memory_count": 0,
         "conversation_length": len(state.conversation),
         "exchange_count": state.exchange_count,
@@ -134,16 +140,15 @@ async def api_status(request):
         "bootstrap": None,
         "gut": None,
         "energy": None,
+        "escalation": state.escalation_stats,
     }
 
     if state.layers:
         data["agent_id"] = state.layers.manifest.get("agent_id")
         data["phase"] = state.layers.manifest.get("phase")
-        data["uptime_hours"] = state.layers.manifest.get("uptime_total_hours", 0)
-        data["times_restarted"] = state.layers.manifest.get("times_restarted", 0)
 
     if state.config:
-        data["model"] = state.config.models.system1.model
+        data["model_s1"] = state.config.models.system1.model
         data["model_s2"] = state.config.models.system2.model if state.config.models.system2 else None
 
     if state.memory:
@@ -155,9 +160,6 @@ async def api_status(request):
     if state.attention:
         data["attention_queue_size"] = state.attention.queue_size
 
-    if state.escalation_stats:
-        data["escalation"] = state.escalation_stats
-
     if state.bootstrap:
         achieved, total = state.bootstrap.progress
         data["bootstrap"] = {"achieved": achieved, "total": total}
@@ -165,25 +167,15 @@ async def api_status(request):
     if state.gut:
         data["gut"] = {
             "summary": state.gut.gut_summary(),
-            "emotional_charge": round(state.gut.emotional_charge, 3),
-            "emotional_alignment": round(state.gut.emotional_alignment, 3),
+            "charge": round(state.gut.emotional_charge, 3),
+            "alignment": round(state.gut.emotional_alignment, 3),
         }
 
     try:
         from .llm import energy_tracker
         data["energy"] = {
             "session_cost": round(energy_tracker.session_cost, 6),
-            "cost_24h": round(energy_tracker.cost_24h, 6),
             "total_calls": len(energy_tracker.entries),
-            "breakdown": {
-                model: {
-                    "calls": s["calls"],
-                    "tokens_in": s["tokens_in"],
-                    "tokens_out": s["tokens_out"],
-                    "cost": round(s["cost"], 6),
-                }
-                for model, s in energy_tracker.breakdown().items()
-            },
         }
     except Exception:
         pass
@@ -191,52 +183,68 @@ async def api_status(request):
     return web.json_response(data)
 
 
-async def api_memories(request):
-    """Paginated memory list (read-only, no side effects)."""
+async def api_attention(request):
+    """Attention queue state — full text of all candidates."""
     state: AgentState = request.app["agent_state"]
-    if not state.memory or not state.memory.pool:
-        return web.json_response({"memories": [], "total": 0})
+    if not state.attention:
+        return web.json_response({"queue": [], "queue_size": 0})
 
-    limit = min(int(request.query.get("limit", "20")), 100)
-    offset = int(request.query.get("offset", "0"))
-
-    rows = await state.memory.pool.fetch(
-        """
-        SELECT id, LEFT(content, 200) as content_preview, type, confidence,
-               importance, depth_weight_alpha, depth_weight_beta,
-               access_count, created_at, source_tag, immutable
-        FROM memories
-        ORDER BY created_at DESC
-        LIMIT $1 OFFSET $2
-        """,
-        limit,
-        offset,
-    )
-    total = await state.memory.memory_count()
-
-    memories = []
-    for r in rows:
-        alpha = r["depth_weight_alpha"] or 1.0
-        beta = r["depth_weight_beta"] or 4.0
-        memories.append({
-            "id": r["id"],
-            "content_preview": r["content_preview"],
-            "type": r["type"],
-            "confidence": round(r["confidence"] or 0, 3),
-            "importance": round(r["importance"] or 0, 3),
-            "depth_center": round(alpha / (alpha + beta), 3),
-            "access_count": r["access_count"] or 0,
-            "created_at": r["created_at"].isoformat() if r["created_at"] else None,
-            "source_tag": r["source_tag"],
-            "immutable": r["immutable"],
+    queue_items = []
+    for cand in state.attention._queue:
+        queue_items.append({
+            "content": cand.content,
+            "source_tag": cand.source_tag,
+            "urgency": round(cand.urgency, 3),
+            "salience": round(cand.salience, 3),
+            "created_at": cand.created_at.isoformat() if cand.created_at else None,
         })
 
     return web.json_response({
-        "memories": memories,
-        "total": total,
-        "limit": limit,
-        "offset": offset,
+        "queue": queue_items,
+        "queue_size": state.attention.queue_size,
     })
+
+
+async def api_memories_search(request):
+    """Search memories using hybrid vector+text search (read-only, no mutation)."""
+    state: AgentState = request.app["agent_state"]
+    if not state.memory:
+        return web.json_response({"results": [], "query": ""})
+
+    query = request.query.get("q", "").strip()
+    if not query:
+        # No query: return latest 10
+        rows = await state.memory.pool.fetch(
+            """
+            SELECT id, LEFT(content, 200) as content_preview, type,
+                   importance, depth_weight_alpha, depth_weight_beta,
+                   access_count, created_at
+            FROM memories ORDER BY created_at DESC LIMIT 10
+            """,
+        )
+        results = [_row_to_memory(r) for r in rows]
+        return web.json_response({"results": results, "query": ""})
+
+    try:
+        hits = await state.memory.search_hybrid(query=query, top_k=15, mutate=False)
+        results = []
+        for h in hits:
+            alpha = h.get("depth_weight_alpha", 1.0) or 1.0
+            beta = h.get("depth_weight_beta", 4.0) or 4.0
+            results.append({
+                "id": h.get("id"),
+                "content_preview": (h.get("content") or "")[:200],
+                "type": h.get("type"),
+                "importance": round(h.get("importance", 0) or 0, 3),
+                "depth_center": round(alpha / (alpha + beta), 3),
+                "access_count": h.get("access_count", 0) or 0,
+                "created_at": h["created_at"].isoformat() if h.get("created_at") else None,
+                "score": round(h.get("rrf_score", 0) or 0, 4),
+            })
+        return web.json_response({"results": results, "query": query})
+    except Exception as e:
+        logger.warning(f"Memory search failed: {e}")
+        return web.json_response({"results": [], "query": query, "error": str(e)})
 
 
 async def api_memory_detail(request):
@@ -286,91 +294,6 @@ async def api_memory_detail(request):
     return web.json_response(data)
 
 
-async def api_attention(request):
-    """Attention queue state."""
-    state: AgentState = request.app["agent_state"]
-    if not state.attention:
-        return web.json_response({"queue": [], "queue_size": 0})
-
-    queue_items = []
-    for cand in state.attention._queue:
-        queue_items.append({
-            "content": cand.content[:100],
-            "source_tag": cand.source_tag,
-            "urgency": round(cand.urgency, 3),
-            "salience": round(cand.salience, 3),
-            "created_at": cand.created_at.isoformat() if cand.created_at else None,
-        })
-
-    return web.json_response({
-        "queue": queue_items,
-        "queue_size": state.attention.queue_size,
-        "has_centroid": state.attention.attention_centroid is not None,
-    })
-
-
-async def api_gut(request):
-    """Gut feeling state + delta log."""
-    state: AgentState = request.app["agent_state"]
-    if not state.gut:
-        return web.json_response({"summary": "not initialized", "deltas": []})
-
-    deltas = []
-    for d in state.gut.get_delta_log(last_n=20):
-        ts = None
-        if hasattr(d, "timestamp") and d.timestamp:
-            ts = datetime.fromtimestamp(d.timestamp, tz=timezone.utc).isoformat()
-        deltas.append({
-            "magnitude": round(d.magnitude, 4),
-            "context": d.context[:80] if d.context else None,
-            "timestamp": ts,
-            "outcome_id": d.outcome_id,
-        })
-
-    return web.json_response({
-        "summary": state.gut.gut_summary(),
-        "emotional_charge": round(state.gut.emotional_charge, 3),
-        "emotional_alignment": round(state.gut.emotional_alignment, 3),
-        "deltas": deltas,
-    })
-
-
-async def api_conversation(request):
-    """Current conversation window."""
-    state: AgentState = request.app["agent_state"]
-    msgs = []
-    for msg in state.conversation[-50:]:
-        msgs.append({
-            "role": msg.get("role"),
-            "content": msg.get("content", "")[:300],
-            "source_tag": msg.get("source_tag"),
-            "timestamp": msg.get("timestamp"),
-        })
-    return web.json_response({"messages": msgs, "total": len(state.conversation)})
-
-
-async def api_energy(request):
-    """Energy tracker breakdown."""
-    try:
-        from .llm import energy_tracker
-        return web.json_response({
-            "session_cost": round(energy_tracker.session_cost, 6),
-            "cost_24h": round(energy_tracker.cost_24h, 6),
-            "total_calls": len(energy_tracker.entries),
-            "breakdown": {
-                model: {
-                    "calls": s["calls"],
-                    "tokens_in": s["tokens_in"],
-                    "tokens_out": s["tokens_out"],
-                    "cost": round(s["cost"], 6),
-                }
-                for model, s in energy_tracker.breakdown().items()
-            },
-        })
-    except Exception as e:
-        return web.json_response({"error": str(e)}, status=500)
-
-
 # ── Server lifecycle ──────────────────────────────────────────────────
 
 
@@ -382,12 +305,9 @@ async def run_dashboard(agent_state: AgentState, shutdown_event: asyncio.Event):
     app.router.add_get("/", index_handler)
     app.router.add_get("/events", sse_handler)
     app.router.add_get("/api/status", api_status)
-    app.router.add_get("/api/memories", api_memories)
-    app.router.add_get("/api/memory/{id}", api_memory_detail)
     app.router.add_get("/api/attention", api_attention)
-    app.router.add_get("/api/gut", api_gut)
-    app.router.add_get("/api/conversation", api_conversation)
-    app.router.add_get("/api/energy", api_energy)
+    app.router.add_get("/api/memories/search", api_memories_search)
+    app.router.add_get("/api/memory/{id}", api_memory_detail)
 
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
@@ -416,16 +336,31 @@ def _json_default(obj):
     return str(obj)
 
 
+def _row_to_memory(r):
+    """Convert a DB row to a memory dict for the API."""
+    alpha = r["depth_weight_alpha"] or 1.0 if "depth_weight_alpha" in r.keys() else 1.0
+    beta = r["depth_weight_beta"] or 4.0 if "depth_weight_beta" in r.keys() else 4.0
+    return {
+        "id": r["id"],
+        "content_preview": r.get("content_preview") or (r.get("content") or "")[:200],
+        "type": r["type"],
+        "importance": round(r.get("importance", 0) or 0, 3),
+        "depth_center": round(alpha / (alpha + beta), 3),
+        "access_count": r.get("access_count", 0) or 0,
+        "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
+    }
+
+
 # ── Inline HTML/CSS/JS ────────────────────────────────────────────────
-# Note: All user-facing data is escaped via textContent in the JS
-# to prevent XSS. The dashboard is localhost-only (Tailscale).
+# All user-facing data is escaped via textContent in the JS.
+# The dashboard is localhost-only (Tailscale).
 
 DASHBOARD_HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Agent Dashboard</title>
+<title>Agent Consciousness</title>
 <style>
 :root {
   --bg: #0d1117;
@@ -433,7 +368,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   --bg3: #21262d;
   --border: #30363d;
   --text: #c9d1d9;
-  --text-dim: #8b949e;
+  --dim: #8b949e;
   --accent: #58a6ff;
   --green: #3fb950;
   --orange: #d29922;
@@ -442,468 +377,657 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
-  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
   background: var(--bg);
   color: var(--text);
   font-size: 13px;
   line-height: 1.5;
+  height: 100vh;
+  overflow: hidden;
 }
-.header {
+
+/* ── Header ── */
+.hdr {
   background: var(--bg2);
   border-bottom: 1px solid var(--border);
-  padding: 8px 16px;
+  padding: 4px 12px;
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  gap: 16px;
+  font-size: 12px;
+  height: 28px;
+  flex-shrink: 0;
 }
-.header h1 { font-size: 14px; color: var(--accent); font-weight: 600; }
-.header .status { font-size: 12px; color: var(--text-dim); }
-.status .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
-.dot.on { background: var(--green); }
-.dot.off { background: var(--red); }
-.grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  grid-template-rows: 1fr 1fr;
-  gap: 1px;
-  height: calc(100vh - 37px);
-  background: var(--border);
+.hdr .title { color: var(--accent); font-weight: 600; font-size: 13px; }
+.hdr .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 3px; vertical-align: middle; }
+.hdr .dot.on { background: var(--green); }
+.hdr .dot.off { background: var(--red); }
+.hdr .stat { color: var(--dim); }
+.hdr .stat b { color: var(--text); font-weight: 500; }
+
+/* ── Layout ── */
+.layout {
+  display: flex;
+  height: calc(100vh - 28px);
 }
-.panel {
-  background: var(--bg);
-  overflow: hidden;
+.left {
+  flex: 65;
+  border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
-.panel-title {
+.right {
+  flex: 35;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Panel chrome ── */
+.ptitle {
   background: var(--bg2);
-  padding: 6px 12px;
+  padding: 4px 10px;
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  color: var(--text-dim);
+  color: var(--dim);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
-.panel-body {
-  padding: 8px 12px;
-  overflow-y: auto;
+.pbody {
   flex: 1;
+  overflow-y: auto;
+  padding: 0;
 }
-.event { padding: 4px 0; border-bottom: 1px solid var(--bg3); font-size: 12px; }
-.stat-row {
+
+/* ── Conscious Mind ── */
+.cycle {
+  border-bottom: 1px solid var(--border);
+  padding: 0;
+}
+.cycle-hdr {
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--dim);
+  background: var(--bg2);
+  cursor: default;
   display: flex;
-  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+}
+.cycle-hdr .src { font-weight: 600; }
+.cycle-hdr .src.ext { color: var(--accent); }
+.cycle-hdr .src.int { color: var(--purple); }
+.cycle-section {
+  padding: 4px 10px;
+  border-top: 1px solid var(--bg3);
+}
+.cycle-label {
+  font-size: 11px;
+  color: var(--dim);
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
   padding: 3px 0;
+}
+.cycle-label:hover { color: var(--text); }
+.cycle-content {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  padding: 2px 0 6px 0;
+}
+.collapsed .cycle-content { display: none; }
+.cycle-section.response {
+  border-left: 2px solid var(--green);
+  padding-left: 8px;
+}
+.cycle-section.response.s2 {
+  border-left-color: var(--orange);
+}
+.response .cycle-label { color: var(--green); }
+.response.s2 .cycle-label { color: var(--orange); }
+
+/* ── Attention Queue ── */
+.attn-panel {
+  flex: 35;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.attn-item {
+  padding: 6px 10px;
   border-bottom: 1px solid var(--bg3);
+  font-size: 12px;
 }
-.stat-row .label { color: var(--text-dim); }
-.stat-row .value { color: var(--text); font-weight: 500; }
-.mem-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-.mem-table th {
-  text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--border);
-  color: var(--text-dim); font-weight: 500; position: sticky; top: 0; background: var(--bg);
+.attn-item .attn-meta {
+  font-size: 11px;
+  color: var(--dim);
+  margin-bottom: 2px;
 }
-.mem-table td { padding: 4px 6px; border-bottom: 1px solid var(--bg3); }
-.mem-table tr:hover { background: var(--bg2); cursor: pointer; }
+.attn-item .attn-meta .src { font-weight: 600; }
+
+/* ── Memory Search ── */
+.mem-panel {
+  flex: 65;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.search-bar {
+  padding: 6px 10px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.search-bar input {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px 8px;
+  font-family: inherit;
+  font-size: 12px;
+  border-radius: 3px;
+  outline: none;
+}
+.search-bar input:focus { border-color: var(--accent); }
+.mem-item {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--bg3);
+  font-size: 12px;
+  cursor: pointer;
+}
+.mem-item:hover { background: var(--bg2); }
+.mem-meta {
+  font-size: 11px;
+  color: var(--dim);
+  display: flex;
+  gap: 8px;
+}
+.mem-meta .type { color: var(--purple); font-weight: 500; }
+.mem-preview {
+  margin-top: 2px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.mem-expanded {
+  display: none;
+  margin-top: 6px;
+  padding: 6px 8px;
+  background: var(--bg2);
+  border-radius: 3px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+}
+.mem-item.open .mem-expanded { display: block; }
+.mem-item.open .mem-preview { display: none; }
 .depth-bar {
-  display: inline-block; width: 40px; height: 6px;
-  background: var(--bg3); border-radius: 3px; overflow: hidden; vertical-align: middle;
+  display: inline-block; width: 30px; height: 5px;
+  background: var(--bg3); border-radius: 2px; overflow: hidden; vertical-align: middle;
 }
-.depth-fill { height: 100%; border-radius: 3px; }
-.pagination {
-  padding: 6px 12px; background: var(--bg2); border-top: 1px solid var(--border);
-  font-size: 11px; display: flex; justify-content: space-between; flex-shrink: 0;
-}
-.pagination button {
-  background: var(--bg3); border: 1px solid var(--border); color: var(--text);
-  padding: 2px 10px; cursor: pointer; font-size: 11px; border-radius: 3px;
-}
-.pagination button:hover { background: var(--border); }
-.pagination button:disabled { opacity: 0.3; cursor: default; }
-.modal-overlay {
-  display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(0,0,0,0.7); z-index: 100; justify-content: center; align-items: center;
-}
-.modal-overlay.active { display: flex; }
-.modal {
-  background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
-  max-width: 600px; width: 90%; max-height: 80vh; overflow-y: auto; padding: 16px;
-}
-.modal h3 { color: var(--accent); margin-bottom: 12px; font-size: 13px; }
-.modal pre {
-  background: var(--bg); padding: 8px; border-radius: 4px;
-  white-space: pre-wrap; word-break: break-word; font-size: 12px;
-}
-.modal .close { float: right; cursor: pointer; color: var(--text-dim); font-size: 16px; }
-.modal .close:hover { color: var(--text); }
-.conv-msg { padding: 4px 0; border-bottom: 1px solid var(--bg3); }
-.conv-msg .role { font-weight: 600; font-size: 11px; }
-.conv-msg .role-user { color: var(--accent); }
-.conv-msg .role-assistant { color: var(--green); }
-.conv-msg .msg-content { font-size: 12px; margin-top: 2px; }
+.depth-fill { height: 100%; border-radius: 2px; }
+.empty-msg { color: var(--dim); padding: 10px; font-size: 12px; }
 </style>
 </head>
 <body>
 
-<div class="header">
-  <h1>Agent Consciousness</h1>
-  <div class="status">
-    <span class="dot" id="sse-dot"></span>
-    <span id="sse-status">connecting...</span>
-    &nbsp;|&nbsp;
-    <span id="header-cost">$0.0000</span>
-  </div>
+<div class="hdr">
+  <span class="title"><span class="dot" id="dot"></span> Agent Consciousness</span>
+  <span class="stat" id="h-gut"></span>
+  <span class="stat" id="h-boot"></span>
+  <span class="stat" id="h-cost"></span>
+  <span class="stat" id="h-esc"></span>
+  <span class="stat" id="h-queue"></span>
+  <span class="stat" id="h-mem"></span>
+  <span class="stat" id="h-model"></span>
 </div>
 
-<div class="grid">
-  <div class="panel">
-    <div class="panel-title">Live Feed</div>
-    <div class="panel-body" id="feed"></div>
+<div class="layout">
+  <div class="left">
+    <div class="ptitle">Conscious Mind</div>
+    <div class="pbody" id="mind"></div>
   </div>
-
-  <div class="panel">
-    <div class="panel-title">Agent Status</div>
-    <div class="panel-body" id="status-panel"></div>
-  </div>
-
-  <div class="panel">
-    <div class="panel-title">Context Window</div>
-    <div class="panel-body" id="conversation-panel"></div>
-  </div>
-
-  <div class="panel">
-    <div class="panel-title">Memory Store</div>
-    <div class="panel-body" id="memory-panel"></div>
-    <div class="pagination">
-      <span id="mem-info">-</span>
-      <span>
-        <button id="mem-prev" disabled>&lt; prev</button>
-        <button id="mem-next">next &gt;</button>
-      </span>
+  <div class="right">
+    <div class="attn-panel">
+      <div class="ptitle">Attention Queue</div>
+      <div class="pbody" id="attn"></div>
+    </div>
+    <div class="mem-panel">
+      <div class="ptitle">Memory</div>
+      <div class="search-bar">
+        <input type="text" id="mem-q" placeholder="search memories..." />
+      </div>
+      <div class="pbody" id="mem-results"></div>
     </div>
   </div>
 </div>
 
-<div class="modal-overlay" id="modal">
-  <div class="modal">
-    <span class="close" id="modal-close">&times;</span>
-    <div id="modal-content"></div>
-  </div>
-</div>
-
 <script>
-// All dynamic content uses textContent (safe) or DOM construction.
-// No raw HTML injection from API data.
+// All dynamic content via textContent / DOM construction. No innerHTML with API data.
 
-const feed = document.getElementById('feed');
-const dot = document.getElementById('sse-dot');
-const sseStatus = document.getElementById('sse-status');
+var mind = document.getElementById('mind');
+var attn = document.getElementById('attn');
+var memResults = document.getElementById('mem-results');
+var memInput = document.getElementById('mem-q');
+var dot = document.getElementById('dot');
+
+// Track current cycle being assembled from SSE events
+var currentCycle = null;
+var cycleCount = 0;
 
 // ── SSE ──
 function connectSSE() {
-  const es = new EventSource('/events');
-  es.onopen = function() {
-    dot.className = 'dot on';
-    sseStatus.textContent = 'connected';
-  };
-  es.onerror = function() {
-    dot.className = 'dot off';
-    sseStatus.textContent = 'reconnecting...';
-  };
+  var es = new EventSource('/events');
+  es.onopen = function() { dot.className = 'dot on'; };
+  es.onerror = function() { dot.className = 'dot off'; };
 
-  ['cycle_start', 'llm_response', 'escalation', 'gate_flush'].forEach(function(type) {
-    es.addEventListener(type, function(e) {
-      addEvent(type, JSON.parse(e.data));
-    });
+  es.addEventListener('cycle_start', function(e) {
+    var d = JSON.parse(e.data);
+    startCycle(d);
+    updateAttnFromCycle(d);
+  });
+
+  es.addEventListener('context_assembled', function(e) {
+    var d = JSON.parse(e.data);
+    addContext(d);
+  });
+
+  es.addEventListener('llm_response', function(e) {
+    var d = JSON.parse(e.data);
+    addResponse(d);
+  });
+
+  es.addEventListener('escalation', function(e) {
+    var d = JSON.parse(e.data);
+    addEscalation(d);
+  });
+
+  es.addEventListener('gate_flush', function(e) {
+    var d = JSON.parse(e.data);
+    addGateFlush(d);
   });
 }
 
-function addEvent(type, data) {
+// ── Cycle construction ──
+function startCycle(d) {
+  cycleCount++;
   var div = document.createElement('div');
-  div.className = 'event';
+  div.className = 'cycle';
+  div.id = 'cycle-' + cycleCount;
+
+  // Header line
+  var hdr = document.createElement('div');
+  hdr.className = 'cycle-hdr';
 
   var ts = document.createElement('span');
-  ts.style.color = 'var(--text-dim)';
-  ts.style.fontSize = '11px';
-  ts.textContent = data.ts ? new Date(data.ts).toLocaleTimeString() + ' ' : '';
-  div.appendChild(ts);
+  ts.textContent = d.ts ? new Date(d.ts).toLocaleTimeString() : '';
+  hdr.appendChild(ts);
 
-  var tag = document.createElement('span');
-  tag.style.fontWeight = '600';
+  var src = document.createElement('span');
+  var srcTag = d.winner ? d.winner.source : (d.source || '?');
+  src.className = 'src ' + (srcTag.indexOf('external') >= 0 ? 'ext' : 'int');
+  src.textContent = srcTag;
+  hdr.appendChild(src);
 
-  if (type === 'cycle_start') {
-    tag.style.color = 'var(--green)';
-    tag.textContent = '[ATTEND] ';
-    div.appendChild(tag);
-    var src = document.createElement('span');
-    src.style.color = data.source === 'external_user' ? 'var(--accent)' : 'var(--purple)';
-    src.textContent = data.source + ' ';
-    div.appendChild(src);
-    var info = document.createElement('span');
-    info.style.color = 'var(--text-dim)';
-    info.textContent = '(sal=' + (data.salience||0).toFixed(3) + ', q=' + (data.queue_size||0) + ') ';
-    div.appendChild(info);
-    var ct = document.createElement('span');
-    ct.textContent = data.content || '';
-    div.appendChild(ct);
-  } else if (type === 'llm_response') {
-    tag.style.color = data.escalated ? 'var(--orange)' : 'var(--accent)';
-    tag.textContent = data.escalated ? '[S2] ' : '[S1] ';
-    div.appendChild(tag);
-    var rp = document.createElement('span');
-    rp.textContent = data.reply || '';
-    div.appendChild(rp);
-  } else if (type === 'escalation') {
-    tag.style.color = 'var(--red)';
-    tag.textContent = '[ESCALATE] ';
-    div.appendChild(tag);
-    var tr = document.createElement('span');
-    tr.textContent = 'triggers: ' + (data.triggers||[]).join(', ');
-    div.appendChild(tr);
-  } else if (type === 'gate_flush') {
-    tag.style.color = 'var(--orange)';
-    tag.textContent = '[GATE] ';
-    div.appendChild(tag);
-    var gf = document.createElement('span');
-    gf.textContent = data.persisted + ' persisted, ' + data.dropped + ' dropped';
-    div.appendChild(gf);
+  if (d.winner) {
+    var sal = document.createElement('span');
+    sal.textContent = 'sal:' + d.winner.salience;
+    hdr.appendChild(sal);
   }
 
-  feed.insertBefore(div, feed.firstChild);
-  while (feed.children.length > 200) feed.lastChild.remove();
+  var qs = document.createElement('span');
+  qs.textContent = 'q:' + (d.queue_size || 0);
+  hdr.appendChild(qs);
+
+  if (d.losers && d.losers.length > 0) {
+    var lo = document.createElement('span');
+    lo.textContent = '+' + d.losers.length + ' losers';
+    hdr.appendChild(lo);
+  }
+
+  div.appendChild(hdr);
+
+  // Input section — what won attention
+  if (d.winner && d.winner.content) {
+    var sec = makeSection('INPUT', d.winner.content, false);
+    div.appendChild(sec);
+  }
+
+  mind.appendChild(div);
+  currentCycle = div;
+  autoScroll();
 }
 
-// ── Status polling ──
-function mkStat(label, value) {
-  var row = document.createElement('div');
-  row.className = 'stat-row';
-  var l = document.createElement('span');
-  l.className = 'label';
-  l.textContent = label;
-  var v = document.createElement('span');
-  v.className = 'value';
-  v.textContent = String(value);
-  row.appendChild(l);
-  row.appendChild(v);
-  return row;
+function addContext(d) {
+  if (!currentCycle) return;
+
+  // System prompt (collapsible, collapsed by default)
+  if (d.system_prompt) {
+    var sp = makeSection('SYSTEM PROMPT [' + (d.identity_tokens||0) + ' id tokens, shift:' + (d.context_shift||0) + ']', d.system_prompt, true);
+    currentCycle.appendChild(sp);
+  }
+
+  // Conversation window
+  if (d.conversation && d.conversation.length > 0) {
+    var convText = '';
+    d.conversation.forEach(function(m) {
+      var tag = m.source_tag ? ' [' + m.source_tag + ']' : '';
+      convText += m.role + tag + ': ' + m.content + '\n\n';
+    });
+    var cv = makeSection('CONVERSATION (' + d.conversation.length + ' msgs)', convText.trim(), true);
+    currentCycle.appendChild(cv);
+  }
+
+  autoScroll();
 }
 
-async function refreshStatus() {
-  try {
-    var r = await fetch('/api/status');
-    var d = await r.json();
-    var p = document.getElementById('status-panel');
-    p.replaceChildren();
-    p.appendChild(mkStat('Agent', d.agent_id || '-'));
-    p.appendChild(mkStat('Phase', d.phase || '-'));
-    p.appendChild(mkStat('System 1', d.model || '-'));
-    p.appendChild(mkStat('System 2', d.model_s2 || '-'));
-    p.appendChild(mkStat('Memories', d.memory_count));
-    p.appendChild(mkStat('Conversation', d.conversation_length + ' msgs'));
-    p.appendChild(mkStat('Exchanges/Flush', d.exchange_count + '/5'));
-    p.appendChild(mkStat('Attention Queue', d.attention_queue_size));
-    if (d.escalation) p.appendChild(mkStat('Escalations', 'S2: ' + d.escalation.escalations + ', retries: ' + d.escalation.retries + ' (' + d.escalation.retry_successes + ' ok)'));
-    if (d.bootstrap) p.appendChild(mkStat('Bootstrap', d.bootstrap.achieved + '/' + d.bootstrap.total));
-    if (d.gut) {
-      p.appendChild(mkStat('Gut', d.gut.summary));
-      p.appendChild(mkStat('Emotional Charge', d.gut.emotional_charge));
-      p.appendChild(mkStat('Alignment', d.gut.emotional_alignment));
+function addResponse(d) {
+  if (!currentCycle) return;
+
+  var label = (d.escalated ? 'S2' : 'S1') + ' RESPONSE';
+  if (d.model) label += ' [' + d.model + ']';
+  if (d.confidence) label += ' conf:' + d.confidence;
+
+  var sec = document.createElement('div');
+  sec.className = 'cycle-section response' + (d.escalated ? ' s2' : '');
+
+  var lbl = document.createElement('div');
+  lbl.className = 'cycle-label';
+  lbl.textContent = label;
+  sec.appendChild(lbl);
+
+  var ct = document.createElement('div');
+  ct.className = 'cycle-content';
+  ct.textContent = d.reply || '';
+  sec.appendChild(ct);
+
+  currentCycle.appendChild(sec);
+  autoScroll();
+}
+
+function addEscalation(d) {
+  if (!currentCycle) return;
+  var sec = makeSection('ESCALATION triggers:[' + (d.triggers||[]).join(', ') + '] conf:' + d.confidence, '', false);
+  sec.style.borderLeft = '2px solid var(--red)';
+  sec.style.paddingLeft = '8px';
+  currentCycle.appendChild(sec);
+  autoScroll();
+}
+
+function addGateFlush(d) {
+  // Add as a standalone entry, not part of a cycle
+  var div = document.createElement('div');
+  div.className = 'cycle';
+  var hdr = document.createElement('div');
+  hdr.className = 'cycle-hdr';
+  var ts = document.createElement('span');
+  ts.textContent = d.ts ? new Date(d.ts).toLocaleTimeString() : '';
+  hdr.appendChild(ts);
+  var info = document.createElement('span');
+  info.style.color = 'var(--orange)';
+  info.style.fontWeight = '600';
+  info.textContent = 'GATE FLUSH: ' + d.persisted + ' persisted, ' + d.dropped + ' dropped';
+  hdr.appendChild(info);
+  div.appendChild(hdr);
+  mind.appendChild(div);
+  autoScroll();
+}
+
+function makeSection(label, content, collapsed) {
+  var sec = document.createElement('div');
+  sec.className = 'cycle-section' + (collapsed ? ' collapsed' : '');
+
+  var lbl = document.createElement('div');
+  lbl.className = 'cycle-label';
+  lbl.textContent = (collapsed ? '\u25b6 ' : '\u25bc ') + label;
+  lbl.addEventListener('click', function() {
+    var isCollapsed = sec.classList.contains('collapsed');
+    sec.classList.toggle('collapsed');
+    lbl.textContent = (isCollapsed ? '\u25bc ' : '\u25b6 ') + label;
+  });
+  sec.appendChild(lbl);
+
+  var ct = document.createElement('div');
+  ct.className = 'cycle-content';
+  ct.textContent = content;
+  sec.appendChild(ct);
+
+  return sec;
+}
+
+// ── Auto-scroll with scroll-lock detection ──
+var userScrolled = false;
+
+mind.addEventListener('scroll', function() {
+  var atBottom = mind.scrollHeight - mind.scrollTop - mind.clientHeight < 50;
+  userScrolled = !atBottom;
+});
+
+function autoScroll() {
+  if (!userScrolled) {
+    mind.scrollTop = mind.scrollHeight;
+  }
+}
+
+// ── Attention queue ──
+function updateAttnFromCycle(d) {
+  attn.replaceChildren();
+
+  // Show winner
+  if (d.winner) {
+    var item = makeAttnItem(d.winner.source, d.winner.salience, d.winner.content, true);
+    attn.appendChild(item);
+  }
+
+  // Show losers
+  if (d.losers) {
+    d.losers.forEach(function(l) {
+      var item = makeAttnItem(l.source, l.salience, l.content, false);
+      attn.appendChild(item);
+    });
+  }
+
+  if (!d.winner && (!d.losers || d.losers.length === 0)) {
+    var empty = document.createElement('div');
+    empty.className = 'empty-msg';
+    empty.textContent = 'queue empty';
+    attn.appendChild(empty);
+  }
+}
+
+function makeAttnItem(source, salience, content, isWinner) {
+  var div = document.createElement('div');
+  div.className = 'attn-item';
+  if (isWinner) div.style.borderLeft = '2px solid var(--green)';
+
+  var meta = document.createElement('div');
+  meta.className = 'attn-meta';
+
+  var src = document.createElement('span');
+  src.className = 'src';
+  src.style.color = source.indexOf('external') >= 0 ? 'var(--accent)' : 'var(--purple)';
+  src.textContent = source;
+  meta.appendChild(src);
+
+  var sal = document.createElement('span');
+  sal.textContent = ' sal:' + salience;
+  meta.appendChild(sal);
+
+  if (isWinner) {
+    var tag = document.createElement('span');
+    tag.style.color = 'var(--green)';
+    tag.textContent = ' \u2713 winner';
+    meta.appendChild(tag);
+  }
+
+  div.appendChild(meta);
+
+  var ct = document.createElement('div');
+  ct.textContent = content || '';
+  ct.style.whiteSpace = 'pre-wrap';
+  ct.style.wordBreak = 'break-word';
+  div.appendChild(ct);
+
+  return div;
+}
+
+// Also poll attention every 5s for between-cycle updates
+setInterval(function() {
+  fetch('/api/attention').then(function(r) { return r.json(); }).then(function(d) {
+    if (d.queue && d.queue.length > 0) {
+      attn.replaceChildren();
+      d.queue.forEach(function(c) {
+        var item = makeAttnItem(c.source_tag, c.salience, c.content, false);
+        attn.appendChild(item);
+      });
     }
-    if (d.energy) {
-      p.appendChild(mkStat('Session Cost', '$' + d.energy.session_cost.toFixed(4)));
-      p.appendChild(mkStat('24h Cost', '$' + d.energy.cost_24h.toFixed(4)));
-      p.appendChild(mkStat('API Calls', d.energy.total_calls));
-      document.getElementById('header-cost').textContent = '$' + d.energy.session_cost.toFixed(4);
-      if (d.energy.breakdown) {
-        for (var model in d.energy.breakdown) {
-          var s = d.energy.breakdown[model];
-          var short = model.split('-').slice(-2).join('-');
-          p.appendChild(mkStat('  ' + short, s.calls + ' calls, $' + s.cost.toFixed(4)));
-        }
+  }).catch(function(){});
+}, 5000);
+
+// ── Memory search ──
+var searchTimeout = null;
+
+memInput.addEventListener('input', function() {
+  clearTimeout(searchTimeout);
+  searchTimeout = setTimeout(doSearch, 300);
+});
+memInput.addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') { clearTimeout(searchTimeout); doSearch(); }
+});
+
+function doSearch() {
+  var q = memInput.value.trim();
+  var url = '/api/memories/search' + (q ? '?q=' + encodeURIComponent(q) : '');
+  fetch(url).then(function(r) { return r.json(); }).then(function(d) {
+    renderMemResults(d.results || []);
+  }).catch(function(){});
+}
+
+function renderMemResults(results) {
+  memResults.replaceChildren();
+  if (results.length === 0) {
+    var empty = document.createElement('div');
+    empty.className = 'empty-msg';
+    empty.textContent = 'no results';
+    memResults.appendChild(empty);
+    return;
+  }
+  results.forEach(function(m) {
+    var div = document.createElement('div');
+    div.className = 'mem-item';
+
+    var meta = document.createElement('div');
+    meta.className = 'mem-meta';
+
+    var type = document.createElement('span');
+    type.className = 'type';
+    type.textContent = m.type || '-';
+    meta.appendChild(type);
+
+    var pct = Math.round((m.depth_center || 0) * 100);
+    var bar = document.createElement('span');
+    bar.className = 'depth-bar';
+    var fill = document.createElement('span');
+    fill.className = 'depth-fill';
+    fill.style.width = pct + '%';
+    fill.style.background = pct > 70 ? 'var(--green)' : pct > 40 ? 'var(--orange)' : 'var(--dim)';
+    bar.appendChild(fill);
+    meta.appendChild(bar);
+
+    var imp = document.createElement('span');
+    imp.textContent = 'imp:' + (m.importance || 0);
+    meta.appendChild(imp);
+
+    var acc = document.createElement('span');
+    acc.textContent = 'acc:' + (m.access_count || 0);
+    meta.appendChild(acc);
+
+    if (m.score) {
+      var sc = document.createElement('span');
+      sc.textContent = 'score:' + m.score;
+      meta.appendChild(sc);
+    }
+
+    if (m.created_at) {
+      var dt = document.createElement('span');
+      dt.textContent = m.created_at.split('T')[0];
+      meta.appendChild(dt);
+    }
+
+    div.appendChild(meta);
+
+    var preview = document.createElement('div');
+    preview.className = 'mem-preview';
+    preview.textContent = m.content_preview || '';
+    div.appendChild(preview);
+
+    // Expanded view (loaded on click)
+    var expanded = document.createElement('div');
+    expanded.className = 'mem-expanded';
+    div.appendChild(expanded);
+
+    div.addEventListener('click', function() {
+      if (div.classList.contains('open')) {
+        div.classList.remove('open');
+        return;
       }
-    }
-    p.appendChild(mkStat('Restarts', d.times_restarted || 0));
-  } catch(e) {}
-}
-
-// ── Conversation ──
-async function refreshConversation() {
-  try {
-    var r = await fetch('/api/conversation');
-    var d = await r.json();
-    var p = document.getElementById('conversation-panel');
-    p.replaceChildren();
-    if (!d.messages || d.messages.length === 0) {
-      var empty = document.createElement('div');
-      empty.style.color = 'var(--text-dim)';
-      empty.style.padding = '8px';
-      empty.textContent = 'No conversation yet';
-      p.appendChild(empty);
-      return;
-    }
-    var info = document.createElement('div');
-    info.style.cssText = 'color:var(--text-dim);font-size:11px;margin-bottom:6px;';
-    info.textContent = d.total + ' messages in window';
-    p.appendChild(info);
-    d.messages.forEach(function(m) {
-      var div = document.createElement('div');
-      div.className = 'conv-msg';
-      var role = document.createElement('span');
-      role.className = 'role role-' + m.role;
-      role.textContent = m.role;
-      div.appendChild(role);
-      if (m.source_tag) {
-        var st = document.createElement('span');
-        st.style.cssText = 'color:var(--text-dim);font-size:10px;margin-left:4px;';
-        st.textContent = '[' + m.source_tag + ']';
-        div.appendChild(st);
-      }
-      var ct = document.createElement('div');
-      ct.className = 'msg-content';
-      ct.textContent = m.content;
-      div.appendChild(ct);
-      p.appendChild(div);
+      div.classList.add('open');
+      if (expanded.textContent) return; // already loaded
+      fetch('/api/memory/' + encodeURIComponent(m.id))
+        .then(function(r) { return r.json(); })
+        .then(function(full) {
+          expanded.textContent = '';
+          var fields = [
+            'id: ' + full.id,
+            'type: ' + full.type,
+            'depth: ' + full.depth_center + ' (a=' + full.depth_alpha + ' b=' + full.depth_beta + ')',
+            'importance: ' + full.importance + '  confidence: ' + full.confidence,
+            'access: ' + full.access_count + '  evidence: ' + full.evidence_count,
+            'source: ' + (full.source_tag || full.source || '-'),
+            'created: ' + (full.created_at || '-'),
+            'immutable: ' + full.immutable,
+            '',
+            full.content,
+          ];
+          if (full.compressed) fields.push('\n[compressed] ' + full.compressed);
+          expanded.textContent = fields.join('\n');
+        }).catch(function(){
+          expanded.textContent = '[error loading]';
+        });
     });
-    p.scrollTop = p.scrollHeight;
-  } catch(e) {}
+
+    memResults.appendChild(div);
+  });
 }
 
-// ── Memory browser ──
-var memOffset = 0;
-var memLimit = 15;
-
-async function loadMemories() {
-  try {
-    var r = await fetch('/api/memories?limit=' + memLimit + '&offset=' + memOffset);
-    var d = await r.json();
-    var p = document.getElementById('memory-panel');
-    p.replaceChildren();
-
-    var table = document.createElement('table');
-    table.className = 'mem-table';
-    var thead = document.createElement('thead');
-    var hr = document.createElement('tr');
-    ['Type', 'Content', 'Depth', 'Imp', 'Access'].forEach(function(h) {
-      var th = document.createElement('th');
-      th.textContent = h;
-      hr.appendChild(th);
-    });
-    thead.appendChild(hr);
-    table.appendChild(thead);
-
-    var tbody = document.createElement('tbody');
-    d.memories.forEach(function(m) {
-      var tr = document.createElement('tr');
-      tr.addEventListener('click', function() { showMemory(m.id); });
-
-      var tdType = document.createElement('td');
-      tdType.style.color = 'var(--purple)';
-      tdType.textContent = m.type || '-';
-      tr.appendChild(tdType);
-
-      var tdContent = document.createElement('td');
-      tdContent.textContent = (m.content_preview || '').substring(0, 80);
-      tr.appendChild(tdContent);
-
-      var pct = Math.round(m.depth_center * 100);
-      var color = pct > 70 ? 'var(--green)' : pct > 40 ? 'var(--orange)' : 'var(--text-dim)';
-      var tdDepth = document.createElement('td');
-      var bar = document.createElement('span');
-      bar.className = 'depth-bar';
-      var fill = document.createElement('span');
-      fill.className = 'depth-fill';
-      fill.style.width = pct + '%';
-      fill.style.background = color;
-      bar.appendChild(fill);
-      tdDepth.appendChild(bar);
-      var pctText = document.createTextNode(' ' + pct + '%');
-      tdDepth.appendChild(pctText);
-      tr.appendChild(tdDepth);
-
-      var tdImp = document.createElement('td');
-      tdImp.textContent = m.importance;
-      tr.appendChild(tdImp);
-
-      var tdAcc = document.createElement('td');
-      tdAcc.textContent = m.access_count;
-      tr.appendChild(tdAcc);
-
-      tbody.appendChild(tr);
-    });
-    table.appendChild(tbody);
-    p.appendChild(table);
-
-    document.getElementById('mem-info').textContent =
-      (memOffset+1) + '-' + Math.min(memOffset+memLimit, d.total) + ' of ' + d.total;
-    document.getElementById('mem-prev').disabled = memOffset === 0;
-    document.getElementById('mem-next').disabled = memOffset + memLimit >= d.total;
-  } catch(e) {}
+// ── Header status polling ──
+function refreshHeader() {
+  fetch('/api/status').then(function(r) { return r.json(); }).then(function(d) {
+    setText('h-gut', d.gut ? 'gut:' + d.gut.charge : 'gut:-');
+    setText('h-boot', d.bootstrap ? 'boot:' + d.bootstrap.achieved + '/' + d.bootstrap.total : 'boot:-');
+    setText('h-cost', d.energy ? '$' + d.energy.session_cost.toFixed(4) : '$0');
+    setText('h-esc', d.escalation ? 'esc:' + d.escalation.escalations : 'esc:0');
+    setText('h-queue', 'q:' + (d.attention_queue_size || 0));
+    setText('h-mem', 'mem:' + (d.memory_count || 0));
+    setText('h-model', d.model_s1 ? d.model_s1.split('-').slice(-2).join('-') : '');
+  }).catch(function(){});
 }
 
-document.getElementById('mem-prev').addEventListener('click', function() {
-  memOffset = Math.max(0, memOffset - memLimit);
-  loadMemories();
-});
-document.getElementById('mem-next').addEventListener('click', function() {
-  memOffset += memLimit;
-  loadMemories();
-});
-
-async function showMemory(id) {
-  try {
-    var r = await fetch('/api/memory/' + encodeURIComponent(id));
-    var d = await r.json();
-    var mc = document.getElementById('modal-content');
-    mc.replaceChildren();
-
-    var h = document.createElement('h3');
-    h.textContent = d.id;
-    mc.appendChild(h);
-
-    var fields = [
-      ['Type', d.type], ['Depth', d.depth_center + ' (a=' + d.depth_alpha + ', b=' + d.depth_beta + ')'],
-      ['Importance', d.importance], ['Confidence', d.confidence],
-      ['Access Count', d.access_count], ['Source', d.source_tag || d.source || '-'],
-      ['Immutable', d.immutable], ['Created', d.created_at || '-'],
-    ];
-    if (d.compressed) fields.push(['Compressed', d.compressed]);
-
-    fields.forEach(function(f) { mc.appendChild(mkStat(f[0], f[1])); });
-
-    var label = document.createElement('div');
-    label.style.marginTop = '12px';
-    label.style.fontWeight = 'bold';
-    label.textContent = 'Content:';
-    mc.appendChild(label);
-
-    var pre = document.createElement('pre');
-    pre.textContent = d.content;
-    mc.appendChild(pre);
-
-    document.getElementById('modal').classList.add('active');
-  } catch(e) {}
+function setText(id, val) {
+  var el = document.getElementById(id);
+  if (el) el.textContent = val;
 }
-
-document.getElementById('modal').addEventListener('click', function(e) {
-  if (e.target === this) this.classList.remove('active');
-});
-document.getElementById('modal-close').addEventListener('click', function() {
-  document.getElementById('modal').classList.remove('active');
-});
-document.addEventListener('keydown', function(e) {
-  if (e.key === 'Escape') document.getElementById('modal').classList.remove('active');
-});
 
 // ── Init ──
 connectSSE();
-refreshStatus();
-refreshConversation();
-loadMemories();
-setInterval(refreshStatus, 5000);
-setInterval(refreshConversation, 3000);
-setInterval(loadMemories, 10000);
+refreshHeader();
+doSearch(); // load latest memories on startup
+setInterval(refreshHeader, 5000);
 </script>
 </body>
 </html>
