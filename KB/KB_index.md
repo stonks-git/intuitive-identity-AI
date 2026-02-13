@@ -11,3 +11,4 @@
 | 02 | KB/KB_02_memory.md | Memory system (unified store, Beta weights, retrieval) | 2026-02-12 |
 | 03 | KB/KB_03_cognitive_loop.md | Cognitive loop, attention, dual-process escalation | 2026-02-12 |
 | 04 | KB/KB_04_peripherals.md | Peripheral architecture, Telegram, stdin, reply_fn | 2026-02-13 |
+| 05 | KB/KB_05_dashboard.md | Dashboard (aiohttp, SSE, memory browser, AgentState) | 2026-02-14 |

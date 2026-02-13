@@ -49,6 +49,12 @@
       "summary": "Telegram: raw httpx, no framework dependency, long polling, owner-only auth",
       "status": "accepted",
       "rationale": "Zero new dependencies (httpx is transitive dep of anthropic/google-genai). Long polling = outbound only, no public endpoint. Owner ID checked against Telegram server-verified from.id."
+    },
+    {
+      "id": "D-007",
+      "summary": "Dashboard: aiohttp, AgentState shared dataclass, SSE broadcast, read-only memory access",
+      "status": "accepted",
+      "rationale": "aiohttp is async-native, runs as coroutine in asyncio.gather. AgentState bridges loop and dashboard. SSE with per-subscriber asyncio.Queue. Memory browser uses direct pool.fetch() to avoid side effects."
     }
   ],
   "tasks": [

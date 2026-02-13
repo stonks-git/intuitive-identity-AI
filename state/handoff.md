@@ -67,23 +67,42 @@
 
 **What was done:**
 1. Completed session G documentation (KB_04, roadmap PERIPH-001, devlog entries)
-2. Fixed stdin peripheral thread pool exhaustion bug:
-   - `run_in_executor` spawned a new thread every 1s for `readline`, old threads hung forever (Docker `tty: true`)
-   - After 32 threads (default pool), entire event loop starved — Telegram polling stopped
-   - Fix: single persistent reader thread + asyncio bridge queue
-3. Removed `stdin_open: true` and `tty: true` from norisor docker-compose.yml (Telegram is primary interface)
-4. Deployed fixed image to norisor, agent started cleanly
-5. **TELEGRAM VERIFIED END-TO-END:**
-   - Message received via getUpdates → won attention (salience=0.470)
-   - Context assembled (identity + situational + safety) → System 1 (Gemini Flash Lite) responded
-   - Reply sent via sendMessage in ~2 seconds
-   - DMN continued thinking between user messages
-   - Safety ceilings enforced (diminishing_returns active, two_gate in shadow)
-6. PERIPH-001 marked DONE in roadmap
+2. Fixed stdin peripheral thread pool exhaustion bug
+3. Deployed to norisor, verified Telegram end-to-end
 
 **Commits:**
 - `56bf262` Document peripheral architecture (session G): KB, roadmap, devlog, handoff
 - `3cdfb95` Fix stdin peripheral thread pool exhaustion in Docker
+
+---
+
+### SESSION 2026-02-14 (I) - DASHBOARD
+
+**STATUS:** IN PROGRESS
+
+**What was done:**
+1. **Dashboard implemented** — full agent consciousness dashboard:
+   - `src/dashboard.py` NEW (~900 lines) — AgentState dataclass, SSE broadcast, REST API, inline dark-theme frontend
+   - aiohttp web server at port 8080, accessible via Tailscale at http://norisor:8080
+   - 4 panels: Live Feed (SSE events), Agent Status, Context Window, Memory Store (paginated + click-to-expand)
+   - Read-only memory access via direct pool.fetch() (no side effects on cognitive system)
+   - All dynamic content uses textContent/DOM construction (no innerHTML XSS risk)
+2. **Wired into cognitive loop:**
+   - `src/loop.py` modified: agent_state param, assigns objects, shared conversation, 4 SSE events
+   - `src/main.py` modified: creates AgentState, passes to loop, adds dashboard task
+   - `_flush_scratch_through_exit_gate` now returns (persisted, dropped) tuple for dashboard
+3. **Infrastructure:**
+   - `requirements.txt`: added aiohttp>=3.9
+   - `Dockerfile`: added EXPOSE 8080
+   - `docker-compose.yml`: added port mapping 8080:8080, removed stdin_open/tty
+   - Norisor docker-compose.yml: added port mapping 8080:8080
+4. **KB updated:**
+   - KB_05_dashboard.md created
+   - KB_01, KB_03, KB_index updated
+   - D-007 decision added to roadmap
+
+**Pending:**
+- Deploy to norisor and verify dashboard at http://norisor:8080
 
 ---
 
@@ -99,7 +118,8 @@ Cognitive architecture for emergent AI identity. Three-layer memory unified into
 |---------|--------|
 | FW-001 | done |
 | WIRE-001/002/003 | done |
-| PERIPH-001 (Telegram) | DONE — verified end-to-end |
+| PERIPH-001 (Telegram) | DONE |
+| DASH-001 (Dashboard) | IN PROGRESS — code complete, needs deploy+verify |
 | TEST-001 | NEXT — full end-to-end runtime test |
 
 ---
@@ -130,8 +150,9 @@ src/
   idle.py                  DMN with stochastic sampling, pushes to shared input_queue
   gut.py                   Two-centroid gut feeling model
   bootstrap.py             10 readiness milestones
-  stdin_peripheral.py      NEW — stdin I/O as peripheral (single reader thread, disabled in Docker)
-  telegram_peripheral.py   NEW — Telegram Bot API via raw httpx (long polling, owner auth, reply_fn)
+  dashboard.py             NEW — localhost web dashboard (aiohttp, SSE, memory browser, port 8080)
+  stdin_peripheral.py      stdin I/O as peripheral (single reader thread, disabled in Docker)
+  telegram_peripheral.py   Telegram Bot API via raw httpx (long polling, owner auth, reply_fn)
 ```
 
 ### Peripheral Architecture (NEW)
@@ -268,9 +289,9 @@ ssh norisor "docker logs agent_001 2>&1 | grep -i telegram"
 ## Git Status
 
 - **Branch:** main
-- **Last commit:** 3cdfb95 Fix stdin peripheral thread pool exhaustion in Docker
-- **CI/CD:** All builds passing. Agent deployed and running on norisor.
-- **Agent status:** RUNNING on norisor, Telegram connected, accepting messages
+- **Last commit:** 82dcb63 Document session H: stdin fix, Telegram verified, PERIPH-001 done
+- **Uncommitted:** Dashboard implementation (dashboard.py, loop.py, main.py, Dockerfile, docker-compose.yml, requirements.txt, KB updates)
+- **Agent status:** Running on norisor, Telegram connected. Dashboard not yet deployed.
 
 ---
 

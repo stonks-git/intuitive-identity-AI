@@ -32,16 +32,16 @@ services:
     environment:
       - DATABASE_URL=postgresql://agent:${AGENT_DB_PASSWORD:-agent_secret}@postgres:5432/agent_memory
 
+    # Dashboard port (accessible via Tailscale)
+    ports:
+      - "8080:8080"
+
     # NO PRIVILEGED ACCESS
     security_opt:
       - no-new-privileges:true
     read_only: false
     tmpfs:
       - /tmp:size=100M
-
-    # Interactive mode (stdin for conversation)
-    stdin_open: true
-    tty: true
 
   # POSTGRES + PGVECTOR — agent's memory store
   postgres:

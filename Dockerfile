@@ -22,4 +22,7 @@ WORKDIR /app
 # Agent state is mounted, not baked in
 VOLUME ["/home/agent/.agent"]
 
+# Dashboard port
+EXPOSE 8080
+
 CMD ["python", "-m", "src.main"]

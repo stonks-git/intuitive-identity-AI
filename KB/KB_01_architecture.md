@@ -5,6 +5,7 @@
 1. **Cognitive Loop** (`src/loop.py`) — processes one input at a time through attentional thread. All sources (user, DMN, consolidation, gut) compete for attention.
 2. **Consolidation** (`src/consolidation.py`) — two-tier: constant background (decay, contradiction scan, pattern detection) + periodic deep cycles (merge, insight, promotion, reconsolidation).
 3. **Idle Loop / DMN** (`src/idle.py`) — spontaneous thought during downtime, filtered through goals/values, queued for cognitive loop.
+4. **Dashboard** (`src/dashboard.py`) — localhost web UI for real-time introspection via SSE + REST API (port 8080).
 
 ## Module Map
 
@@ -30,6 +31,7 @@
 | `tokens.py` | Token counting |
 | `stdin_peripheral.py` | Stdin I/O as a peripheral |
 | `telegram_peripheral.py` | Telegram Bot API peripheral (raw httpx) |
+| `dashboard.py` | Localhost web dashboard (aiohttp, SSE, memory browser) |
 | `main.py` | Entry point, initialization, peripheral wiring |
 
 ## Tech Stack

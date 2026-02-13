@@ -30,6 +30,7 @@ from .consolidation import ConsolidationEngine
 from .idle import IdleLoop
 from .stdin_peripheral import StdinPeripheral
 from .telegram_peripheral import TelegramPeripheral
+from .dashboard import AgentState, run_dashboard
 
 # Load .env before anything that needs API keys
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
@@ -106,6 +107,9 @@ async def main():
     # Start consolidation engine (two-tier: constant + deep)
     consolidation = ConsolidationEngine(config, layers, memory, retry_config=config.retry)
 
+    # Shared agent state — readable by dashboard, written by cognitive loop
+    agent_state = AgentState(config=config, layers=layers, memory=memory)
+
     # Unified input queue — all peripherals push here, cognitive loop reads
     input_queue = asyncio.Queue(maxsize=50)
 
@@ -124,13 +128,15 @@ async def main():
     signal.signal(signal.SIGINT, handle_shutdown)
     signal.signal(signal.SIGTERM, handle_shutdown)
 
-    # Build task list — cognitive loop + consolidation + peripherals
+    # Build task list — cognitive loop + consolidation + peripherals + dashboard
     tasks = [
-        cognitive_loop(config, layers, memory, shutdown_event, input_queue),
+        cognitive_loop(config, layers, memory, shutdown_event, input_queue, agent_state=agent_state),
         consolidation.run(shutdown_event),
         idle.run(shutdown_event),
         stdin_periph.run(shutdown_event),
+        run_dashboard(agent_state, shutdown_event),
     ]
+    logger.info("Dashboard enabled on port 8080")
     if telegram_periph.is_configured:
         tasks.append(telegram_periph.run(shutdown_event))
         logger.info("Telegram peripheral enabled")

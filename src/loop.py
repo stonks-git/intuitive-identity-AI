@@ -225,6 +225,8 @@ async def _flush_scratch_through_exit_gate(
             f"Exit gate flush: {persisted} persisted, {dropped} dropped "
             f"from {len(entries)} scratch entries"
         )
+        return persisted, dropped
+    return 0, 0
 
 
 async def _embed_text(memory, text: str) -> np.ndarray:
@@ -233,7 +235,7 @@ async def _embed_text(memory, text: str) -> np.ndarray:
     return np.array(vec, dtype=np.float32)
 
 
-async def cognitive_loop(config, layers, memory, shutdown_event, input_queue: asyncio.Queue):
+async def cognitive_loop(config, layers, memory, shutdown_event, input_queue: asyncio.Queue, agent_state=None):
     """The main attention-agnostic cognitive loop.
 
     All input sources feed the same pipeline via AttentionAllocator.
@@ -269,16 +271,22 @@ async def cognitive_loop(config, layers, memory, shutdown_event, input_queue: as
 
     # Init attention allocator
     attention = AttentionAllocator()
+    if agent_state:
+        agent_state.attention = attention
 
     # Init safety monitor (§3.9) — Phase A enabled, B/C shadow mode
     safety = SafetyMonitor()
     memory.safety = safety
     logger.info("Safety monitor initialized (Phase A active, B/C shadow)")
+    if agent_state:
+        agent_state.safety = safety
 
     # Init outcome tracker (§5.3) — forward-linkable lifecycle events
     outcome_tracker = OutcomeTracker()
     memory.outcome_tracker = outcome_tracker
     logger.info("Outcome tracker initialized")
+    if agent_state:
+        agent_state.outcome_tracker = outcome_tracker
 
     # Init gut feeling (§5.1) — two-centroid delta model
     gut = GutFeeling()
@@ -290,15 +298,19 @@ async def cognitive_loop(config, layers, memory, shutdown_event, input_queue: as
         l1_embeddings=[vec for _, _, vec in l1_embs] if l1_embs else None,
     )
     logger.info("Gut feeling initialized (subconscious centroid seeded from L0/L1)")
+    if agent_state:
+        agent_state.gut = gut
 
     # Init bootstrap readiness (§5.2) — 10 milestones
     bootstrap = BootstrapReadiness()
     await bootstrap.check_all(memory, layers)
     achieved, total = bootstrap.progress
     logger.info(f"Bootstrap readiness: {achieved}/{total} milestones achieved")
+    if agent_state:
+        agent_state.bootstrap = bootstrap
 
-    # Conversation history (rolling FIFO)
-    conversation = []
+    # Conversation history (rolling FIFO) — shared with dashboard if present
+    conversation = agent_state.conversation if agent_state else []
     exchange_count = 0
 
     # Ensure L0/L1 embeddings cached for context assembly
@@ -354,7 +366,7 @@ async def cognitive_loop(config, layers, memory, shutdown_event, input_queue: as
                     # ── Quit command ──────────────────────────────
                     if text.lower() in ("exit", "quit", "/quit"):
                         logger.info("Final scratch flush before shutdown...")
-                        await _flush_scratch_through_exit_gate(
+                        _, _ = await _flush_scratch_through_exit_gate(
                             exit_gate, memory, layers, conversation,
                             outcome_tracker=outcome_tracker, gut=gut,
                         )
@@ -402,6 +414,17 @@ async def cognitive_loop(config, layers, memory, shutdown_event, input_queue: as
 
             if winner is None:
                 continue
+
+            # Publish cycle_start event for dashboard
+            if agent_state:
+                agent_state.publish_event({
+                    "type": "cycle_start",
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "source": winner.source_tag,
+                    "content": winner.content[:120],
+                    "salience": round(winner.salience, 3),
+                    "queue_size": attention.queue_size,
+                })
 
             attention_embedding = winner.embedding
             previous_attention_embedding = attention.previous_attention_embedding
@@ -538,6 +561,16 @@ async def cognitive_loop(config, layers, memory, shutdown_event, input_queue: as
 
             # ── Confidence check + retry/escalate ──────────────────────
 
+            # Publish llm_response event for dashboard (before escalation)
+            if agent_state and not reply.startswith("[System 1 error"):
+                agent_state.publish_event({
+                    "type": "llm_response",
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "reply": reply[:200],
+                    "escalated": False,
+                    "confidence": round(composite_confidence(reply), 3),
+                })
+
             escalated = False
             if not reply.startswith("[System 1 error"):
                 confidence = composite_confidence(reply)
@@ -604,6 +637,15 @@ async def cognitive_loop(config, layers, memory, shutdown_event, input_queue: as
                         f"confidence={confidence:.2f}"
                     )
 
+                    # Publish escalation event for dashboard
+                    if agent_state:
+                        agent_state.publish_event({
+                            "type": "escalation",
+                            "ts": datetime.now(timezone.utc).isoformat(),
+                            "triggers": triggers,
+                            "confidence": round(confidence, 3),
+                        })
+
                     reply, escalated = await _escalate_to_system2(
                         config=config,
                         system_prompt=active_system_prompt,
@@ -612,6 +654,16 @@ async def cognitive_loop(config, layers, memory, shutdown_event, input_queue: as
                         triggers=triggers,
                         memory=memory,
                     )
+
+                    # Publish escalated response for dashboard
+                    if agent_state and escalated:
+                        agent_state.publish_event({
+                            "type": "llm_response",
+                            "ts": datetime.now(timezone.utc).isoformat(),
+                            "reply": reply[:200],
+                            "escalated": True,
+                            "confidence": round(composite_confidence(reply), 3),
+                        })
 
             # ── Entry gate: agent response ────────────────────────────
 
@@ -647,13 +699,24 @@ async def cognitive_loop(config, layers, memory, shutdown_event, input_queue: as
             # ── Periodic exit gate flush ──────────────────────────────
 
             exchange_count += 1
+            if agent_state:
+                agent_state.exchange_count = exchange_count
             if exchange_count >= EXIT_GATE_FLUSH_INTERVAL:
                 logger.info("Periodic exit gate flush triggered...")
-                await _flush_scratch_through_exit_gate(
+                flush_persisted, flush_dropped = await _flush_scratch_through_exit_gate(
                     exit_gate, memory, layers, conversation,
                     outcome_tracker=outcome_tracker, gut=gut,
                 )
                 exchange_count = 0
+                if agent_state:
+                    agent_state.exchange_count = 0
+                    if flush_persisted or flush_dropped:
+                        agent_state.publish_event({
+                            "type": "gate_flush",
+                            "ts": datetime.now(timezone.utc).isoformat(),
+                            "persisted": flush_persisted,
+                            "dropped": flush_dropped,
+                        })
 
                 # Re-check bootstrap milestones after flush
                 newly = await bootstrap.check_all(memory, layers)
@@ -855,7 +918,7 @@ async def _handle_command(
 
     if command == "/flush":
         await _send("Forcing scratch flush through exit gate...")
-        await _flush_scratch_through_exit_gate(
+        _, _ = await _flush_scratch_through_exit_gate(
             exit_gate, memory, layers, conversation,
             outcome_tracker=getattr(memory, 'outcome_tracker', None),
             gut=gut,

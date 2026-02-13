@@ -50,6 +50,15 @@ Losers decay 0.9x per cycle. User messages naturally suppress DMN.
 - **Gut linking:** `gut.link_outcome(outcome_id)` called after each gate decision, forward-linking gut deltas to outcomes
 - Linked outcomes available via `get_linked_outcomes()` for PCA analysis in deep consolidation
 
+## Dashboard Integration
+
+- `cognitive_loop()` accepts optional `agent_state=None` parameter
+- After creating internal objects (attention, gut, safety, outcome_tracker, bootstrap), assigns them to `agent_state`
+- Conversation list shared by reference: `conversation = agent_state.conversation if agent_state else []`
+- Publishes 4 SSE event types: `cycle_start`, `llm_response`, `escalation`, `gate_flush`
+- All agent_state operations guarded by `if agent_state:` (no-op without dashboard)
+- See KB_05_dashboard.md for full details
+
 ## Escalation Threshold
 
 Adaptive: 0.3 (bootstrap) -> 0.8 (mature).
